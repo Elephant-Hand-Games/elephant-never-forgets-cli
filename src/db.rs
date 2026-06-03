@@ -3,7 +3,6 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection, OptionalExtension};
 
-use crate::cli::CiArgs;
 use crate::{
     config::Config,
     embed::{active_profile, deserialize_vector, serialize_vector, EmbeddingProfile},
@@ -424,19 +423,4 @@ where
 {
     let profile_id = upsert_active_embedding_profile(conn, config)?;
     stream_vector_chunks_for_profile(conn, profile_id, batch_size, on_batch)
-}
-
-pub fn ci(args: CiArgs) -> Result<()> {
-    let config = crate::config::load()?;
-    let cwd = std::env::current_dir()?;
-    open_or_create(&cwd.join(config.state.db_path))?;
-    if args.json {
-        println!(
-            "{}",
-            serde_json::json!({"ok": true, "no_embed": args.no_embed})
-        );
-    } else {
-        println!("ENF CI checks passed");
-    }
-    Ok(())
 }

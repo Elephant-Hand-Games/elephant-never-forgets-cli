@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
-use crate::{config, db, index, models, output, search};
+use crate::{config, index, models, output, search};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -198,6 +198,6 @@ pub fn run() -> anyhow::Result<()> {
         Command::Retrieve(args) => search::run(args, true),
         Command::Status(args) => output::status(args),
         Command::Doctor(args) => output::doctor(args),
-        Command::Ci(args) => db::ci(args),
+        Command::Ci(args) => output::ci(args),
     }
 }
