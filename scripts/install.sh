@@ -24,6 +24,12 @@ detect_target() {
         *) echo "unsupported architecture: $arch" >&2; exit 1 ;;
       esac
       ;;
+    mingw*|msys*|cygwin*)
+      case "$arch" in
+        x86_64|amd64) echo "x86_64-pc-windows-msvc" ;;
+        *) echo "unsupported architecture: $arch" >&2; exit 1 ;;
+      esac
+      ;;
     *)
       echo "unsupported OS: $os" >&2
       exit 1
@@ -62,6 +68,10 @@ install_from_cargo() {
 
 target="$(detect_target)"
 archive="enf-$target.tar.gz"
+binary="enf"
+case "$target" in
+  *windows*) binary="enf.exe" ;;
+esac
 tmpdir="$(mktemp -d)"
 trap 'rm -rf "$tmpdir"' EXIT
 
@@ -74,10 +84,9 @@ fi
 if download "$url" "$tmpdir/$archive"; then
   mkdir -p "$INSTALL_DIR"
   tar -xzf "$tmpdir/$archive" -C "$tmpdir"
-  install "$tmpdir/enf" "$INSTALL_DIR/enf"
-  echo "installed enf to $INSTALL_DIR/enf"
+  install "$tmpdir/$binary" "$INSTALL_DIR/$binary"
+  echo "installed $binary to $INSTALL_DIR/$binary"
 else
   echo "release archive unavailable for $target; falling back to cargo install" >&2
   install_from_cargo
 fi
-

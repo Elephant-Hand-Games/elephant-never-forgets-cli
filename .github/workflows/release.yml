@@ -22,6 +22,8 @@ jobs:
             target: x86_64-apple-darwin
           - os: macos-14
             target: aarch64-apple-darwin
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
 
     steps:
       - uses: actions/checkout@v4
@@ -34,12 +36,19 @@ jobs:
         shell: bash
         run: |
           mkdir -p dist
-          cp "target/${{ matrix.target }}/release/enf" dist/enf
-          tar -C dist -czf "enf-${{ matrix.target }}.tar.gz" enf
-          shasum -a 256 "enf-${{ matrix.target }}.tar.gz" > "enf-${{ matrix.target }}.tar.gz.sha256"
+          bin="enf"
+          if [[ "${{ matrix.target }}" == *"windows"* ]]; then
+            bin="enf.exe"
+          fi
+          cp "target/${{ matrix.target }}/release/$bin" "dist/$bin"
+          tar -C dist -czf "enf-${{ matrix.target }}.tar.gz" "$bin"
+          if command -v shasum >/dev/null 2>&1; then
+            shasum -a 256 "enf-${{ matrix.target }}.tar.gz" > "enf-${{ matrix.target }}.tar.gz.sha256"
+          else
+            sha256sum "enf-${{ matrix.target }}.tar.gz" > "enf-${{ matrix.target }}.tar.gz.sha256"
+          fi
       - uses: softprops/action-gh-release@v2
         with:
           files: |
             enf-${{ matrix.target }}.tar.gz
             enf-${{ matrix.target }}.tar.gz.sha256
-

@@ -20,16 +20,16 @@ workflow files.
 curl -fsSL https://raw.githubusercontent.com/Elephant-Hand-Games/elephant-never-forgets-cli/main/scripts/install.sh | sh
 ```
 
-The installer downloads a prebuilt macOS/Linux release archive when one exists.
-Before the first binary release, or when no archive exists for your platform, it
-falls back to installing from the Git repo with Cargo:
+The installer downloads a prebuilt macOS, Linux, or Windows release archive when
+one exists. Before the first binary release, or when no archive exists for your
+platform, it falls back to installing from the Git repo with Cargo:
 
 ```sh
 cargo install --git https://github.com/Elephant-Hand-Games/elephant-never-forgets-cli.git --locked
 ```
 
-The default binary install location for release archives is `$HOME/.local/bin`.
-Override it if needed:
+The default binary install location for release archives is `$HOME/.local/bin`
+on Unix-like shells. Override it if needed:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/Elephant-Hand-Games/elephant-never-forgets-cli/main/scripts/install.sh | ENF_INSTALL_DIR=/usr/local/bin sh
@@ -41,9 +41,16 @@ curl -fsSL https://raw.githubusercontent.com/Elephant-Hand-Games/elephant-never-
 cargo install --path . --locked
 ```
 
-Homebrew support is practical after the first release archive exists. It needs a
-tap formula with the release URL and SHA-256 checksum; the release workflow in
-this repo produces the archives and checksums that formula would use.
+Published binary targets:
+
+- `aarch64-apple-darwin` for Apple Silicon Macs
+- `x86_64-apple-darwin` for Intel Macs
+- `x86_64-unknown-linux-gnu` for Linux x64, including Debian x64
+- `x86_64-pc-windows-msvc` for Windows x64
+
+Homebrew support is practical now that release archives exist. It needs a tap
+formula with the release URL and SHA-256 checksum; the release workflow in this
+repo produces the archives and checksums that formula would use.
 
 ## Command Workflows
 
