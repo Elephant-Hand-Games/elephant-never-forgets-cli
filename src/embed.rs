@@ -60,21 +60,26 @@ pub fn active_profile(config: &Config) -> EmbeddingProfile {
 }
 
 pub fn profile_hash(profile: &EmbeddingProfile) -> String {
-    let input = serde_json::json!({
-        "provider": profile.provider,
-        "engine": profile.engine,
-        "model": profile.model,
-        "variant": profile.variant,
-        "dimensions": profile.dimensions,
-        "document_prefix": profile.document_prefix,
-        "query_prefix": profile.query_prefix,
-        "normalizer_version": profile.normalizer_version,
-        "chunker_version": profile.chunker_version,
-        "serialization_version": profile.serialization_version,
-    });
-    blake3::hash(input.to_string().as_bytes())
-        .to_hex()
-        .to_string()
+    let mut hasher = blake3::Hasher::new();
+    update_hash_field(&mut hasher, "provider", &profile.provider);
+    update_optional_hash_field(&mut hasher, "engine", profile.engine.as_deref());
+    update_hash_field(&mut hasher, "model", &profile.model);
+    update_optional_hash_field(&mut hasher, "variant", profile.variant.as_deref());
+    update_hash_field(&mut hasher, "dimensions", &profile.dimensions.to_string());
+    update_hash_field(&mut hasher, "document_prefix", &profile.document_prefix);
+    update_hash_field(&mut hasher, "query_prefix", &profile.query_prefix);
+    update_hash_field(
+        &mut hasher,
+        "normalizer_version",
+        &profile.normalizer_version,
+    );
+    update_hash_field(&mut hasher, "chunker_version", &profile.chunker_version);
+    update_hash_field(
+        &mut hasher,
+        "serialization_version",
+        &profile.serialization_version,
+    );
+    hasher.finalize().to_hex().to_string()
 }
 
 pub fn serialize_vector(vector: &[f32]) -> Vec<u8> {
@@ -93,4 +98,26 @@ pub fn deserialize_vector(bytes: &[u8]) -> anyhow::Result<Vec<f32>> {
         .chunks_exact(4)
         .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
         .collect())
+}
+
+fn update_hash_field(hasher: &mut blake3::Hasher, label: &str, value: &str) {
+    hasher.update(label.as_bytes());
+    hasher.update(&[0]);
+    hasher.update(value.as_bytes());
+    hasher.update(&[0]);
+}
+
+fn update_optional_hash_field(hasher: &mut blake3::Hasher, label: &str, value: Option<&str>) {
+    hasher.update(label.as_bytes());
+    hasher.update(&[0]);
+    match value {
+        Some(value) => {
+            hasher.update(&[1]);
+            hasher.update(value.as_bytes());
+        }
+        None => {
+            hasher.update(&[0]);
+        }
+    }
+    hasher.update(&[0]);
 }

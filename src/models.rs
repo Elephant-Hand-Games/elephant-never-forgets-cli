@@ -1,22 +1,35 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::Result;
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
 
 use crate::{
     cli::{ModelsArgs, ModelsCommand},
     config::{Config, ModelCache},
+    db,
+    embed::{active_profile, EmbeddingProfile},
 };
 
 #[derive(Debug, Serialize)]
 struct ModelStatus<'a> {
+    profile_hash: &'a str,
+    status: &'a str,
     provider: &'a str,
     engine: Option<&'a str>,
     model: &'a str,
     variant: Option<&'a str>,
     dimensions: usize,
     cache_path: String,
+    marker_path: String,
     installed: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct InstalledModelMarker<'a> {
+    status: &'a str,
+    cache_path: String,
+    profile: &'a EmbeddingProfile,
 }
 
 pub fn run(args: ModelsArgs) -> Result<()> {
@@ -56,49 +69,93 @@ pub fn run(args: ModelsArgs) -> Result<()> {
 }
 
 pub fn install_active_model(config: &Config) -> Result<()> {
-    let path = cache_path(config)?;
-    std::fs::create_dir_all(&path)?;
-    let marker = path.join(model_marker_name(config));
-    std::fs::write(marker, "installed\n")?;
-    Ok(())
+    let cwd = std::env::current_dir()?;
+    let global_cache_dir = dirs::cache_dir();
+    install_active_model_in(config, &cwd, global_cache_dir.as_deref())
 }
 
 pub fn is_active_model_installed(config: &Config) -> Result<bool> {
-    Ok(cache_path(config)?.join(model_marker_name(config)).exists())
+    let cwd = std::env::current_dir()?;
+    let global_cache_dir = dirs::cache_dir();
+    is_active_model_installed_in(config, &cwd, global_cache_dir.as_deref())
 }
 
 pub fn cache_path(config: &Config) -> Result<PathBuf> {
-    let path = match config.state.model_cache {
-        ModelCache::Project => std::env::current_dir()?.join(".enf/models"),
-        ModelCache::Global => dirs::cache_dir()
-            .unwrap_or(std::env::current_dir()?.join(".cache"))
-            .join("enf/models"),
+    let cwd = std::env::current_dir()?;
+    let global_cache_dir = dirs::cache_dir();
+    Ok(cache_path_for(config, &cwd, global_cache_dir.as_deref()))
+}
+
+pub fn cache_path_for(config: &Config, cwd: &Path, global_cache_dir: Option<&Path>) -> PathBuf {
+    match config.state.model_cache {
+        ModelCache::Project => cwd.join(".enf/models"),
+        ModelCache::Global => global_cache_dir
+            .map(|root| root.join("enf/models"))
+            .unwrap_or_else(|| cwd.join(".cache").join("enf/models")),
+    }
+}
+
+pub fn install_active_model_in(
+    config: &Config,
+    cwd: &Path,
+    global_cache_dir: Option<&Path>,
+) -> Result<()> {
+    let profile = active_profile(config);
+    let path = cache_path_for(config, cwd, global_cache_dir);
+    std::fs::create_dir_all(&path)?;
+
+    let marker = InstalledModelMarker {
+        status: "installed",
+        cache_path: path.display().to_string(),
+        profile: &profile,
     };
-    Ok(path)
+    let marker_path = active_model_marker_path(&profile, &path);
+    std::fs::write(marker_path, serde_json::to_vec_pretty(&marker)?)?;
+
+    let conn = db::open_or_create(&cwd.join(&config.state.db_path))?;
+    upsert_model_cache(&conn, config, &path, "installed")?;
+    Ok(())
+}
+
+pub fn is_active_model_installed_in(
+    config: &Config,
+    cwd: &Path,
+    global_cache_dir: Option<&Path>,
+) -> Result<bool> {
+    let profile = active_profile(config);
+    let path = cache_path_for(config, cwd, global_cache_dir);
+    let marker_path = active_model_marker_path(&profile, &path);
+    if marker_path.exists() {
+        return Ok(true);
+    }
+    let conn = db::open_or_create(&cwd.join(&config.state.db_path))?;
+    Ok(model_cache_status(&conn, config, &path)?.as_deref() == Some("installed"))
 }
 
 fn print_model_status(config: &Config, json: bool) -> Result<()> {
-    let variant = config
-        .embedding
-        .variant
-        .as_ref()
-        .map(|variant| match variant {
-            crate::config::ModelVariant::Quantized => "quantized",
-            crate::config::ModelVariant::Full => "full",
-        });
+    let profile = active_profile(config);
+    let installed = is_active_model_installed(config)?;
+    let model_cache_path = cache_path(config)?;
+    let marker_path = active_model_marker_path(&profile, &model_cache_path);
+    let status = if installed { "installed" } else { "missing" };
     let status = ModelStatus {
-        provider: config.embedding.provider.as_str(),
-        engine: config.embedding.engine.as_deref(),
-        model: &config.embedding.model,
-        variant,
-        dimensions: config.embedding.dimensions,
-        cache_path: cache_path(config)?.display().to_string(),
-        installed: is_active_model_installed(config)?,
+        profile_hash: &profile.profile_hash,
+        status,
+        provider: profile.provider.as_str(),
+        engine: profile.engine.as_deref(),
+        model: &profile.model,
+        variant: profile.variant.as_deref(),
+        dimensions: profile.dimensions,
+        cache_path: model_cache_path.display().to_string(),
+        marker_path: marker_path.display().to_string(),
+        installed,
     };
     if json {
         println!("{}", serde_json::to_string_pretty(&status)?);
     } else {
         println!("Active embedding profile:");
+        println!("  profile:  {}", status.profile_hash);
+        println!("  status:   {}", status.status);
         println!("  provider: {}", status.provider);
         if let Some(engine) = status.engine {
             println!("  engine:   {}", engine);
@@ -109,25 +166,90 @@ fn print_model_status(config: &Config, json: bool) -> Result<()> {
         }
         println!("  dims:     {}", status.dimensions);
         println!("  cache:    {}", status.cache_path);
+        println!("  marker:   {}", status.marker_path);
         println!("  installed: {}", status.installed);
     }
     Ok(())
 }
 
-fn model_marker_name(config: &Config) -> String {
-    let variant = config
-        .embedding
-        .variant
-        .as_ref()
-        .map(|variant| match variant {
-            crate::config::ModelVariant::Quantized => "quantized",
-            crate::config::ModelVariant::Full => "full",
-        })
-        .unwrap_or("none");
-    format!(
-        "{}-{}-{}.installed",
-        config.embedding.provider.as_str(),
-        config.embedding.model,
-        variant
-    )
+fn active_model_marker_path(profile: &EmbeddingProfile, cache_path: &Path) -> PathBuf {
+    cache_path.join(format!("{}.json", profile.profile_hash))
+}
+
+fn model_cache_status(
+    conn: &Connection,
+    config: &Config,
+    cache_path: &Path,
+) -> Result<Option<String>> {
+    let profile = active_profile(config);
+    let engine = profile.engine.as_deref().unwrap_or("");
+    let variant = profile.variant.as_deref().unwrap_or("");
+    let cache_path = cache_path.display().to_string();
+    let status = conn
+        .query_row(
+            r#"
+            SELECT status
+            FROM model_cache
+            WHERE provider = ?1
+              AND ifnull(engine, '') = ?2
+              AND model = ?3
+              AND ifnull(variant, '') = ?4
+              AND dimensions = ?5
+              AND cache_path = ?6
+            LIMIT 1
+            "#,
+            params![
+                profile.provider.as_str(),
+                engine,
+                profile.model.as_str(),
+                variant,
+                profile.dimensions as i64,
+                cache_path,
+            ],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?;
+    Ok(status)
+}
+
+fn upsert_model_cache(
+    conn: &Connection,
+    config: &Config,
+    cache_path: &Path,
+    status: &str,
+) -> Result<()> {
+    let profile = active_profile(config);
+    let engine = profile.engine.as_deref().unwrap_or("");
+    let variant = profile.variant.as_deref().unwrap_or("");
+    let cache_path = cache_path.display().to_string();
+    conn.execute(
+        r#"
+        INSERT INTO model_cache (
+            provider,
+            engine,
+            model,
+            variant,
+            dimensions,
+            cache_path,
+            installed_at,
+            last_used_at,
+            status
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now'), datetime('now'), ?7)
+        ON CONFLICT(provider, engine, model, variant, dimensions, cache_path)
+        DO UPDATE SET
+            installed_at = excluded.installed_at,
+            last_used_at = excluded.last_used_at,
+            status = excluded.status
+        "#,
+        params![
+            profile.provider.as_str(),
+            engine,
+            profile.model.as_str(),
+            variant,
+            profile.dimensions as i64,
+            cache_path,
+            status,
+        ],
+    )?;
+    Ok(())
 }
