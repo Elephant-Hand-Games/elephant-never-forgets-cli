@@ -67,6 +67,7 @@ Subcommands:
   enf models install [model] [--variant <variant>] [--json]
   ```
   - `model` positional argument is optional
+  - Captures the active profile hash and cache marker state for the resolved cache scope.
 - `cache-path`:
   ```text
   enf models cache-path [--json]
@@ -118,6 +119,12 @@ Flags:
 - `--cached-query-only`
 - `--json`
 - Provider overrides: same as `index`
+
+Notes:
+- When stored chunk embeddings exist for the active profile, search/retrieve use
+  hybrid ranking over vector similarity, keyword score, and metadata score.
+- Query embeddings are cached by normalized query. `--cached-query-only` fails if
+  the query vector is not already cached for the active profile.
 
 ## `retrieve`
 

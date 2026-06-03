@@ -1,33 +1,22 @@
-use anyhow::Result;
-use rusqlite::OptionalExtension;
-
 use crate::{
     cli::SearchArgs,
     errors::EnfError,
     ranking::{self, RankedResult},
 };
+use anyhow::Result;
 
 pub fn run(args: SearchArgs, retrieve: bool) -> Result<()> {
     let config = crate::config::load()?;
     let profile = crate::embed::active_profile(&config);
     let cwd = std::env::current_dir()?;
     let conn = crate::db::open_or_create(&cwd.join(&config.state.db_path))?;
+    let profile_id = crate::db::upsert_embedding_profile(&conn, &profile)?;
+    let normalized_query = ranking::normalize_query(&args.query);
 
-    if args.cached_query_only {
-        let cached: Option<i64> = conn
-            .query_row(
-                "SELECT qe.id
-                 FROM query_embeddings qe
-                 JOIN embedding_profiles ep ON ep.id = qe.profile_id
-                 WHERE ep.profile_hash = ?1 AND qe.normalized_query = ?2
-                 LIMIT 1",
-                rusqlite::params![profile.profile_hash, ranking::normalize_query(&args.query)],
-                |row| row.get(0),
-            )
-            .optional()?;
-        if cached.is_none() {
-            return Err(EnfError::QueryEmbeddingNotCached.into());
-        }
+    if args.cached_query_only
+        && crate::db::query_embedding(&conn, profile_id, &normalized_query)?.is_none()
+    {
+        return Err(EnfError::QueryEmbeddingNotCached.into());
     }
 
     let limit = args.limit.unwrap_or(config.search.limit);
@@ -38,6 +27,17 @@ pub fn run(args: SearchArgs, retrieve: bool) -> Result<()> {
         config.search.snippet_chars,
         &profile.profile_hash,
     )?;
+    let mut vector_results = vector_results(VectorSearch {
+        conn: &conn,
+        config: &config,
+        profile_id,
+        profile_hash: &profile.profile_hash,
+        query: &args.query,
+        normalized_query: &normalized_query,
+        cached_query_only: args.cached_query_only,
+        limit,
+    })?;
+    results.append(&mut vector_results);
     if results.is_empty() {
         results = query_files(
             &conn,
@@ -68,6 +68,88 @@ pub fn run(args: SearchArgs, retrieve: bool) -> Result<()> {
         }
     }
     Ok(())
+}
+
+struct VectorSearch<'a> {
+    conn: &'a rusqlite::Connection,
+    config: &'a crate::config::Config,
+    profile_id: i64,
+    profile_hash: &'a str,
+    query: &'a str,
+    normalized_query: &'a str,
+    cached_query_only: bool,
+    limit: usize,
+}
+
+fn vector_results(search: VectorSearch<'_>) -> Result<Vec<RankedResult>> {
+    let has_vectors =
+        !crate::db::vector_chunks_for_profile(search.conn, search.profile_id, 1, 0)?.is_empty();
+    if !has_vectors {
+        return Ok(Vec::new());
+    }
+
+    let query_vector = if let Some(vector) =
+        crate::db::query_embedding(search.conn, search.profile_id, search.normalized_query)?
+    {
+        vector
+    } else {
+        if search.cached_query_only {
+            return Err(EnfError::QueryEmbeddingNotCached.into());
+        }
+        let mut provider = crate::providers::build_provider(search.config)?;
+        let vector = provider.embed_query(search.query)?;
+        crate::db::upsert_query_embedding(
+            search.conn,
+            search.profile_id,
+            search.normalized_query,
+            &vector,
+        )?;
+        vector
+    };
+
+    let mut top = ranking::TopK::new(search.limit.saturating_mul(2).max(search.limit));
+    crate::db::stream_vector_chunks_for_profile(
+        search.conn,
+        search.profile_id,
+        search.config.search.batch_scan_size,
+        |rows| {
+            for row in rows {
+                let vector_score = ranking::cosine_similarity(&query_vector, &row.vector).max(0.0);
+                let keyword_score =
+                    ranking::keyword_score(search.query, &format!("{}\n{}", row.path, row.text));
+                let metadata_score = ranking::keyword_score(search.query, &row.path);
+                let score = ranking::hybrid_score(
+                    vector_score,
+                    keyword_score,
+                    metadata_score,
+                    ranking::ScoreWeights {
+                        vector: search.config.search.vector_weight,
+                        keyword: search.config.search.keyword_weight,
+                        metadata: search.config.search.metadata_weight,
+                    },
+                );
+                top.push(RankedResult {
+                    path: row.path.clone(),
+                    snippet: snippet(&row.text, search.config.search.snippet_chars),
+                    score,
+                    kind: "chunk".into(),
+                    file_id: Some(row.file_id),
+                    chunk_id: Some(row.chunk_id),
+                    chunk_index: Some(row.chunk_index),
+                    start_line: row.start_line,
+                    end_line: row.end_line,
+                    keyword_score,
+                    vector_score,
+                    metadata_score,
+                    profile_hash: search.profile_hash.to_string(),
+                    mode: "hybrid".into(),
+                    level: "chunk".into(),
+                });
+            }
+            Ok(())
+        },
+    )?;
+    Ok(top.into_sorted_vec())
 }
 
 fn query_chunks(

@@ -10,8 +10,7 @@ workflow files.
 - It supports install/init, model management, indexing, search, retrieve, status,
   doctor, and CI verification workflows.
 - Native provider defaults are `provider = "native"` + `engine = "fastembed"` in
-  config, but provider backends are currently a work-in-progress for full runtime
-  embedding resolution.
+  config, and native fastembed is an available runtime path for embeddings.
 
 Use `cargo install` or `cargo install --path .` from this repo for your preferred
 distribution method.
@@ -112,7 +111,8 @@ global` uses the environment cache directory.
 - SQLite persistent store
 - FTS5 keyword index
 - Search output includes stored path/snippet payloads with configurable modes/limits
-- Query embedding cache
+- Query embedding cache for repeated search/retrieve workflows
+- Chunk embedding persistence for the active embedding profile
 - Chunk-level and file-level indexing
 - JSON output for automation and agent workflows
 
@@ -121,10 +121,16 @@ custom HTTP embedding endpoints.
 
 ### Native fastembed status
 
-The project’s configuration and install flow target a local native provider using
-`fastembed`, but full provider runtime support is not yet complete. Current command
-behaviors are intentionally documented around configuration, indexing, and query
-workflow only.
+`enf` now ships with a native fastembed profile path (`provider = "native"` and
+`engine = "fastembed"`).
+
+- `enf models install` currently prepares and records the active model profile,
+  then writes/updates the cache marker under the resolved model cache path.
+- `enf index --install-models <path>` records the active profile and embeds missing
+  chunks for that profile.
+- `enf search` and `enf retrieve` combine keyword matches with stored chunk vectors
+  when embeddings exist, cache query embeddings by normalized query, and continue
+  to return text-backed results when no chunk vectors are present.
 
 For a complete CLI surface reference, see [`docs/command-reference.md`](./docs/command-reference.md).
 

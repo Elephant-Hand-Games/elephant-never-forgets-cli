@@ -1,9 +1,38 @@
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use rusqlite::Connection;
+use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::cli::CiArgs;
+use crate::{
+    config::Config,
+    embed::{active_profile, deserialize_vector, serialize_vector, EmbeddingProfile},
+};
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct StoredEmbeddingProfile {
+    pub id: i64,
+    pub profile: EmbeddingProfile,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct ChunkForEmbedding {
+    pub chunk_id: i64,
+    pub text: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct VectorChunkRow {
+    pub chunk_id: i64,
+    pub file_id: i64,
+    pub path: String,
+    pub chunk_index: i64,
+    pub start_line: Option<i64>,
+    pub end_line: Option<i64>,
+    pub text: String,
+    pub vector: Vec<f32>,
+}
 
 const MIGRATIONS: &[&str] = &[r#"
 PRAGMA journal_mode = WAL;
@@ -126,6 +155,275 @@ pub fn migrate(conn: &Connection) -> Result<()> {
         )?;
     }
     Ok(())
+}
+
+pub fn upsert_embedding_profile(conn: &Connection, profile: &EmbeddingProfile) -> Result<i64> {
+    conn.execute(
+        "INSERT INTO embedding_profiles (
+            profile_hash,
+            provider,
+            engine,
+            model,
+            variant,
+            endpoint,
+            dimensions,
+            document_prefix,
+            query_prefix,
+            normalizer_version,
+            chunker_version,
+            serialization_version,
+            created_at
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, datetime('now'))
+        ON CONFLICT(profile_hash) DO UPDATE SET profile_hash = excluded.profile_hash",
+        params![
+            &profile.profile_hash,
+            &profile.provider,
+            profile.engine.as_deref(),
+            &profile.model,
+            profile.variant.as_deref(),
+            profile.endpoint.as_deref(),
+            profile.dimensions as i64,
+            &profile.document_prefix,
+            &profile.query_prefix,
+            &profile.normalizer_version,
+            &profile.chunker_version,
+            &profile.serialization_version,
+        ],
+    )?;
+    embedding_profile_id(conn, &profile.profile_hash)
+}
+
+pub fn upsert_active_embedding_profile(conn: &Connection, config: &Config) -> Result<i64> {
+    let profile = active_profile(config);
+    upsert_embedding_profile(conn, &profile)
+}
+
+pub fn embedding_profile_id(conn: &Connection, profile_hash: &str) -> Result<i64> {
+    Ok(conn.query_row(
+        "SELECT id FROM embedding_profiles WHERE profile_hash = ?1",
+        [profile_hash],
+        |row| row.get(0),
+    )?)
+}
+
+pub fn get_embedding_profile(
+    conn: &Connection,
+    profile: &EmbeddingProfile,
+) -> Result<Option<StoredEmbeddingProfile>> {
+    get_embedding_profile_by_hash(conn, &profile.profile_hash)
+}
+
+pub fn get_active_embedding_profile(
+    conn: &Connection,
+    config: &Config,
+) -> Result<Option<StoredEmbeddingProfile>> {
+    let profile = active_profile(config);
+    get_embedding_profile_by_hash(conn, &profile.profile_hash)
+}
+
+pub fn get_embedding_profile_id(
+    conn: &Connection,
+    profile: &EmbeddingProfile,
+) -> Result<Option<i64>> {
+    get_embedding_profile(conn, profile).map(|profile| profile.map(|profile| profile.id))
+}
+
+pub fn get_active_embedding_profile_id(conn: &Connection, config: &Config) -> Result<Option<i64>> {
+    get_active_embedding_profile(conn, config).map(|profile| profile.map(|profile| profile.id))
+}
+
+fn get_embedding_profile_by_hash(
+    conn: &Connection,
+    profile_hash: &str,
+) -> Result<Option<StoredEmbeddingProfile>> {
+    conn.query_row(
+        "SELECT id, profile_hash, provider, engine, model, variant, endpoint, dimensions,
+                document_prefix, query_prefix, normalizer_version, chunker_version,
+                serialization_version, created_at
+         FROM embedding_profiles
+         WHERE profile_hash = ?1",
+        [profile_hash],
+        |row| {
+            Ok(StoredEmbeddingProfile {
+                id: row.get(0)?,
+                profile: EmbeddingProfile {
+                    profile_hash: row.get(1)?,
+                    provider: row.get(2)?,
+                    engine: row.get(3)?,
+                    model: row.get(4)?,
+                    variant: row.get(5)?,
+                    endpoint: row.get(6)?,
+                    dimensions: row.get::<_, i64>(7)? as usize,
+                    document_prefix: row.get(8)?,
+                    query_prefix: row.get(9)?,
+                    normalizer_version: row.get(10)?,
+                    chunker_version: row.get(11)?,
+                    serialization_version: row.get(12)?,
+                },
+                created_at: row.get(13)?,
+            })
+        },
+    )
+    .optional()
+    .map_err(Into::into)
+}
+
+pub fn chunks_missing_embeddings(
+    conn: &Connection,
+    profile_id: i64,
+    limit: usize,
+) -> Result<Vec<ChunkForEmbedding>> {
+    let mut stmt = conn.prepare(
+        "SELECT c.id, c.text
+         FROM chunks c
+         LEFT JOIN embeddings e ON e.chunk_id = c.id AND e.profile_id = ?1
+         WHERE e.id IS NULL
+         ORDER BY c.id
+         LIMIT ?2",
+    )?;
+    let rows = stmt.query_map(params![profile_id, limit as i64], |row| {
+        Ok(ChunkForEmbedding {
+            chunk_id: row.get(0)?,
+            text: row.get(1)?,
+        })
+    })?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+}
+
+pub fn upsert_chunk_embedding(
+    conn: &Connection,
+    profile_id: i64,
+    chunk_id: i64,
+    vector: &[f32],
+) -> Result<()> {
+    conn.execute(
+        "INSERT INTO embeddings(profile_id, chunk_id, vector, created_at)
+         VALUES (?1, ?2, ?3, datetime('now'))
+         ON CONFLICT(profile_id, chunk_id)
+         DO UPDATE SET vector = excluded.vector, created_at = excluded.created_at",
+        params![profile_id, chunk_id, serialize_vector(vector)],
+    )?;
+    Ok(())
+}
+
+pub fn query_embedding(
+    conn: &Connection,
+    profile_id: i64,
+    normalized_query: &str,
+) -> Result<Option<Vec<f32>>> {
+    let bytes: Option<Vec<u8>> = conn
+        .query_row(
+            "SELECT vector FROM query_embeddings WHERE profile_id = ?1 AND normalized_query = ?2",
+            params![profile_id, normalized_query],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if bytes.is_some() {
+        conn.execute(
+            "UPDATE query_embeddings SET last_used_at = datetime('now') WHERE profile_id = ?1 AND normalized_query = ?2",
+            params![profile_id, normalized_query],
+        )?;
+    }
+    bytes.map(|bytes| deserialize_vector(&bytes)).transpose()
+}
+
+pub fn upsert_query_embedding(
+    conn: &Connection,
+    profile_id: i64,
+    normalized_query: &str,
+    vector: &[f32],
+) -> Result<()> {
+    conn.execute(
+        "INSERT INTO query_embeddings(profile_id, normalized_query, vector, created_at, last_used_at)
+         VALUES (?1, ?2, ?3, datetime('now'), datetime('now'))
+         ON CONFLICT(profile_id, normalized_query)
+         DO UPDATE SET vector = excluded.vector, last_used_at = excluded.last_used_at",
+        params![profile_id, normalized_query, serialize_vector(vector)],
+    )?;
+    Ok(())
+}
+
+pub fn vector_chunks_for_profile(
+    conn: &Connection,
+    profile_id: i64,
+    limit: usize,
+    offset: usize,
+) -> Result<Vec<VectorChunkRow>> {
+    let mut stmt = conn.prepare(
+        "SELECT c.id, f.id, f.path, c.chunk_index, c.start_line, c.end_line, c.text, e.vector
+         FROM embeddings e
+         JOIN chunks c ON c.id = e.chunk_id
+         JOIN files f ON f.id = c.file_id
+         WHERE e.profile_id = ?1
+         ORDER BY c.id
+         LIMIT ?2 OFFSET ?3",
+    )?;
+    let rows = stmt.query_map(params![profile_id, limit as i64, offset as i64], |row| {
+        let bytes: Vec<u8> = row.get(7)?;
+        Ok((
+            row.get::<_, i64>(0)?,
+            row.get::<_, i64>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, i64>(3)?,
+            row.get::<_, Option<i64>>(4)?,
+            row.get::<_, Option<i64>>(5)?,
+            row.get::<_, String>(6)?,
+            bytes,
+        ))
+    })?;
+    let mut results = Vec::new();
+    for row in rows {
+        let (chunk_id, file_id, path, chunk_index, start_line, end_line, text, bytes) = row?;
+        results.push(VectorChunkRow {
+            chunk_id,
+            file_id,
+            path,
+            chunk_index,
+            start_line,
+            end_line,
+            text,
+            vector: deserialize_vector(&bytes)?,
+        });
+    }
+    Ok(results)
+}
+
+pub fn stream_vector_chunks_for_profile<F>(
+    conn: &Connection,
+    profile_id: i64,
+    batch_size: usize,
+    mut on_batch: F,
+) -> Result<()>
+where
+    F: FnMut(&[VectorChunkRow]) -> Result<()>,
+{
+    if batch_size == 0 {
+        anyhow::bail!("batch_size must be greater than 0");
+    }
+
+    let mut offset = 0usize;
+    loop {
+        let rows = vector_chunks_for_profile(conn, profile_id, batch_size, offset)?;
+        if rows.is_empty() {
+            break;
+        }
+        offset += rows.len();
+        on_batch(&rows)?;
+    }
+    Ok(())
+}
+
+pub fn stream_vector_chunks_for_active_profile<F>(
+    conn: &Connection,
+    config: &Config,
+    batch_size: usize,
+    on_batch: F,
+) -> Result<()>
+where
+    F: FnMut(&[VectorChunkRow]) -> Result<()>,
+{
+    let profile_id = upsert_active_embedding_profile(conn, config)?;
+    stream_vector_chunks_for_profile(conn, profile_id, batch_size, on_batch)
 }
 
 pub fn ci(args: CiArgs) -> Result<()> {

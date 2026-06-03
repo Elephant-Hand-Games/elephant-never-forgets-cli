@@ -173,6 +173,23 @@ pub fn cosine_similarity(left: &[f32], right: &[f32]) -> f32 {
     (dot / (left_norm * right_norm)).clamp(-1.0, 1.0)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VectorScoreMode {
+    Dot,
+    Cosine,
+}
+
+pub fn vector_score(left: &[f32], right: &[f32], mode: VectorScoreMode) -> f32 {
+    match mode {
+        VectorScoreMode::Dot => dot_product(left, right),
+        VectorScoreMode::Cosine => cosine_similarity(left, right),
+    }
+}
+
+pub fn query_cache_key(query: &str) -> String {
+    normalize_query(query)
+}
+
 pub fn keyword_score(query: &str, text: &str) -> f32 {
     let normalized_query = normalize_query(query);
     if normalized_query.is_empty() {

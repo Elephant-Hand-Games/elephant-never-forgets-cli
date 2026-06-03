@@ -7,7 +7,7 @@ use std::{
 use anyhow::{Context, Result};
 use rusqlite::{params, OptionalExtension, Transaction};
 
-use crate::{cli::IndexArgs, config::Config, db, discovery, extract};
+use crate::{cli::IndexArgs, config::Config, db, discovery, extract, models, providers};
 
 pub fn run(args: IndexArgs) -> Result<()> {
     let config = crate::config::load()?;
@@ -15,12 +15,7 @@ pub fn run(args: IndexArgs) -> Result<()> {
     index_path(&cwd, args.path, &config, args.install_models)
 }
 
-pub fn index_path(
-    root: &Path,
-    path: PathBuf,
-    config: &Config,
-    _install_models: bool,
-) -> Result<()> {
+pub fn index_path(root: &Path, path: PathBuf, config: &Config, install_models: bool) -> Result<()> {
     let db_path = root.join(&config.state.db_path);
     let mut conn = db::open_or_create(&db_path)?;
     let tx = conn.transaction()?;
@@ -41,8 +36,60 @@ pub fn index_path(
     }
 
     tx.commit()?;
+
+    let embedded = maybe_embed_missing_chunks(root, &conn, config, install_models)?;
     println!("Indexed {indexed} files");
+    if embedded > 0 {
+        println!("Embedded {embedded} chunks");
+    }
     Ok(())
+}
+
+fn maybe_embed_missing_chunks(
+    root: &Path,
+    conn: &rusqlite::Connection,
+    config: &Config,
+    install_models: bool,
+) -> Result<usize> {
+    let global_cache_dir = dirs::cache_dir();
+    if install_models {
+        models::install_active_model_in(config, root, global_cache_dir.as_deref())?;
+    }
+    if !install_models
+        && !models::is_active_model_installed_in(config, root, global_cache_dir.as_deref())?
+    {
+        return Ok(0);
+    }
+
+    let mut provider = providers::build_provider(config)?;
+    let profile = provider.profile();
+    let profile_id = db::upsert_embedding_profile(conn, &profile)?;
+    let mut embedded = 0usize;
+
+    loop {
+        let chunks = db::chunks_missing_embeddings(conn, profile_id, config.embedding.batch_size)?;
+        if chunks.is_empty() {
+            break;
+        }
+        let texts = chunks
+            .iter()
+            .map(|chunk| chunk.text.clone())
+            .collect::<Vec<_>>();
+        let vectors = provider.embed_documents(&texts)?;
+        if vectors.len() != chunks.len() {
+            anyhow::bail!(
+                "embedding provider returned {} vectors for {} chunks",
+                vectors.len(),
+                chunks.len()
+            );
+        }
+        for (chunk, vector) in chunks.iter().zip(vectors.iter()) {
+            db::upsert_chunk_embedding(conn, profile_id, chunk.chunk_id, vector)?;
+            embedded += 1;
+        }
+    }
+
+    Ok(embedded)
 }
 
 fn sync_file(

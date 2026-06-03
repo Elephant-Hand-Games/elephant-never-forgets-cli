@@ -377,7 +377,7 @@ impl EmbeddingProvider for NativeFastEmbedProvider {
             .iter()
             .map(|text| format!("{}{}", self.document_prefix, text))
             .collect::<Vec<_>>();
-        self.model()?.embed(prefixed, None).map_err(Into::into)
+        self.model()?.embed(prefixed, None)
     }
 
     fn embed_query(&mut self, query: &str) -> Result<Vec<f32>> {

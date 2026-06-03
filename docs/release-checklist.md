@@ -43,6 +43,16 @@ Use this checklist for packaging-ready releases.
   - Confirm `enf --help` reflects all documented commands and flags
   - Confirm `enf init --db` + `enf status` end-to-end path still matches docs
 
+## Embedding pipeline release checks
+
+- [ ] Confirm docs state native fastembed as implemented and remove obsolete
+  "not implemented" language.
+- [ ] Confirm `enf models install` is documented as recording active profile/cache
+  marker state for the selected cache scope.
+- [ ] Confirm indexing persists chunk embeddings after active model installation.
+- [ ] Confirm search/retrieve use cached query embeddings and stored chunk vectors
+  for hybrid ranking, with text-backed fallback when vectors are absent.
+
 ## Post-release
 
 - [ ] Tag and publish release artifacts
