@@ -21,7 +21,7 @@ curl -fsSL https://raw.githubusercontent.com/Elephant-Hand-Games/elephant-never-
 ```
 
 This downloads the newest GitHub Release archive for your platform, installs the
-`enf` executable into `$HOME/.local/bin`, and adds that directory to your shell
+`enf` executable into `$HOME/.enf/bin`, and adds that directory to your shell
 profile when it is not already on `PATH`. Restart your shell after install, or
 run the `export PATH=...` command printed by the installer.
 

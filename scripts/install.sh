@@ -3,7 +3,7 @@ set -eu
 
 REPO="${ENF_REPO:-Elephant-Hand-Games/elephant-never-forgets-cli}"
 VERSION="${ENF_VERSION:-latest}"
-INSTALL_DIR="${ENF_INSTALL_DIR:-$HOME/.local/bin}"
+INSTALL_DIR="${ENF_INSTALL_DIR:-$HOME/.enf/bin}"
 
 detect_target() {
   os="$(uname -s | tr '[:upper:]' '[:lower:]')"
