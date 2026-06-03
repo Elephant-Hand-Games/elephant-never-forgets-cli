@@ -9,8 +9,8 @@ workflow files.
 - `enf` stores configuration in `.enf.toml` and data in `.enf/index.sqlite`.
 - It supports install/init, model management, indexing, search, retrieve, status,
   doctor, and CI verification workflows.
-- Native provider defaults are `provider = "native"` + `engine = "fastembed"` in
-  config, and native fastembed is an available runtime path for embeddings.
+- Native provider defaults are `provider = "native"` + `engine = "candle"` in
+  config, using `nomic-embed-text-v1.5` locally for embeddings.
 
 ## Installation
 
@@ -28,7 +28,7 @@ run the `export PATH=...` command printed by the installer.
 Install a specific release tag:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Elephant-Hand-Games/elephant-never-forgets-cli/main/scripts/install.sh | ENF_VERSION=v1.1.1 sh
+curl -fsSL https://raw.githubusercontent.com/Elephant-Hand-Games/elephant-never-forgets-cli/main/scripts/install.sh | ENF_VERSION=v1.2.0 sh
 ```
 
 Install somewhere else:
@@ -43,17 +43,8 @@ Published binary targets:
 - `x86_64-unknown-linux-gnu` for Linux x64, including Debian x64
 - `x86_64-pc-windows-msvc` for Windows x64
 
-The Linux x64 release binary is built as a portable CLI binary so commands like
-`enf`, `enf --help`, `enf init`, and remote-provider workflows start on older
-or more conservative Debian-class CPUs. Native fastembed is available on Linux
-when installing from source with default features on a supported CPU:
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/Elephant-Hand-Games/elephant-never-forgets-cli/main/scripts/install.sh | ENF_INSTALL_METHOD=cargo sh
-```
-
-Use Ollama, OpenAI, OpenAI-compatible, or HTTP providers with the portable
-release binary.
+The Linux x64 release binary includes the native Candle embedding runtime and is
+intended to work on Debian x64 CPUs that do not support AVX.
 
 If no release archive exists for your platform, the installer falls back to
 installing from the Git repo with Cargo:
@@ -94,16 +85,6 @@ enf init --db=sqlite --provider native --model nomic-embed-text-v1.5 --variant q
 Native projects install the active model profile during initialization. Use
 `--db=false` only when `.enf/index.sqlite` already exists and you want init to
 write/refresh config without creating the database.
-
-On Linux, the published x64 binary is currently portable-first and does not link
-the native fastembed runtime. For Debian release installs, initialize with
-Ollama or another remote provider, or build from source with default features
-when you want local native embeddings:
-
-```sh
-enf init --db --provider ollama --model nomic-embed-text
-curl -fsSL https://raw.githubusercontent.com/Elephant-Hand-Games/elephant-never-forgets-cli/main/scripts/install.sh | ENF_INSTALL_METHOD=cargo sh
-```
 
 ### Model
 
@@ -162,7 +143,7 @@ enf ci --no-embed
 Example provider setup is done at init, or overridden per indexing/searching
 command.
 
-- Native (fastembed profile target):
+- Native (Candle profile target):
   `enf init --db --provider native --model nomic-embed-text-v1.5 --variant quantized`
 - Ollama:
   `enf init --db --provider ollama --model nomic-embed-text`
@@ -198,8 +179,8 @@ global` uses the environment cache directory.
 ## Default Stack
 
 - Rust CLI
-- Native embedding provider by default (profile target)
-- Native profile default engine name: `fastembed`
+- Native embedding provider by default
+- Native profile default engine name: `candle`
 - `nomic-embed-text-v1.5` quantized profile
 - SQLite persistent store
 - FTS5 keyword index
@@ -212,17 +193,15 @@ global` uses the environment cache directory.
 Optional providers include Ollama, OpenAI, OpenAI-compatible services, and
 custom HTTP embedding endpoints.
 
-### Native fastembed status
+### Native Candle Status
 
-`enf` now ships with a native fastembed profile path (`provider = "native"` and
-`engine = "fastembed"`).
+`enf` ships with a native Candle profile path (`provider = "native"` and
+`engine = "candle"`).
 
 - `enf models install` currently prepares and records the active model profile,
   then writes/updates the cache marker under the resolved model cache path.
 - `enf index <path>` embeds missing chunks for the active profile.
-- Published Linux x64 release binaries are portable builds and return a clear
-  error if the native fastembed provider is used; build from source with default
-  features for native Linux embeddings on supported CPUs.
+- Published Linux x64 release binaries include the native Candle runtime.
 - `enf index --no-embed <path>` skips embedding and is intended only for
   metadata-only workflows.
 - `enf search` and `enf retrieve` combine keyword matches with stored chunk vectors

@@ -17,6 +17,7 @@ fn init_creates_config_and_database() {
     let temp = tempfile::tempdir().unwrap();
     let mut cmd = Command::cargo_bin("enf").unwrap();
     cmd.current_dir(temp.path())
+        .env("ENF_SKIP_NATIVE_MODEL_LOAD", "1")
         .arg("init")
         .assert()
         .success()
@@ -34,6 +35,7 @@ fn init_defaults_to_native_profile() {
     Command::cargo_bin("enf")
         .unwrap()
         .current_dir(temp.path())
+        .env("ENF_SKIP_NATIVE_MODEL_LOAD", "1")
         .arg("init")
         .assert()
         .success();
@@ -42,4 +44,5 @@ fn init_defaults_to_native_profile() {
     assert!(config.contains("provider = \"native\""));
     assert!(config.contains("model = \"nomic-embed-text-v1.5\""));
     assert!(config.contains("variant = \"quantized\""));
+    assert!(config.contains("engine = \"candle\""));
 }

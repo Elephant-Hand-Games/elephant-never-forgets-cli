@@ -1,8 +1,8 @@
 use std::env;
 
+#[cfg(feature = "native-candle")]
+use crate::native_candle::NomicV15CandleEmbedding;
 use anyhow::{Context, Result};
-#[cfg(feature = "native-fastembed")]
-use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
 use reqwest::{
     blocking::Client,
     header::{AUTHORIZATION, CONTENT_TYPE},
@@ -19,7 +19,7 @@ use crate::{
 
 pub fn build_provider(config: &Config) -> Result<Box<dyn EmbeddingProvider + Send>> {
     match config.embedding.provider {
-        Provider::Native => Ok(Box::new(NativeFastEmbedProvider::from_config(config)?)),
+        Provider::Native => Ok(Box::new(NativeCandleProvider::from_config(config)?)),
         Provider::Ollama => Ok(Box::new(OllamaProvider::from_config(config)?)),
         Provider::Openai => Ok(Box::new(OpenAiProvider::from_config(config)?)),
         Provider::OpenaiCompatible => Ok(Box::new(OpenAiCompatibleProvider::from_config(config)?)),
@@ -27,10 +27,9 @@ pub fn build_provider(config: &Config) -> Result<Box<dyn EmbeddingProvider + Sen
     }
 }
 
-#[cfg(feature = "native-fastembed")]
-pub struct NativeFastEmbedProvider {
-    model: Option<TextEmbedding>,
-    embedding_model: EmbeddingModel,
+#[cfg(feature = "native-candle")]
+pub struct NativeCandleProvider {
+    model: Option<NomicV15CandleEmbedding>,
     model_name: String,
     variant: Option<String>,
     dimensions: usize,
@@ -38,8 +37,8 @@ pub struct NativeFastEmbedProvider {
     query_prefix: String,
 }
 
-#[cfg(not(feature = "native-fastembed"))]
-pub struct NativeFastEmbedProvider {
+#[cfg(not(feature = "native-candle"))]
+pub struct NativeCandleProvider {
     profile: EmbeddingProfile,
 }
 
@@ -115,13 +114,13 @@ pub struct HttpProvider {
     query_prefix: String,
 }
 
-impl NativeFastEmbedProvider {
+impl NativeCandleProvider {
     pub fn from_config(config: &Config) -> Result<Self> {
-        #[cfg(feature = "native-fastembed")]
+        #[cfg(feature = "native-candle")]
         {
             Self::from_native_config(config)
         }
-        #[cfg(not(feature = "native-fastembed"))]
+        #[cfg(not(feature = "native-candle"))]
         {
             Ok(Self {
                 profile: native_profile_for_config(config),
@@ -129,8 +128,24 @@ impl NativeFastEmbedProvider {
         }
     }
 
-    #[cfg(feature = "native-fastembed")]
+    #[cfg(feature = "native-candle")]
     fn from_native_config(config: &Config) -> Result<Self> {
+        if config.embedding.model != "nomic-embed-text-v1.5" {
+            anyhow::bail!(
+                "unsupported native Candle model profile: model={}. \
+                 This build ships nomic-embed-text-v1.5 for native embeddings.",
+                config.embedding.model
+            );
+        }
+        if !matches!(
+            config.embedding.variant,
+            Some(crate::config::ModelVariant::Quantized)
+        ) {
+            anyhow::bail!(
+                "embedding.variant must be \"quantized\" for native Candle model {}",
+                config.embedding.model
+            );
+        }
         let variant = config
             .embedding
             .variant
@@ -139,10 +154,8 @@ impl NativeFastEmbedProvider {
                 crate::config::ModelVariant::Quantized => "quantized".to_string(),
                 crate::config::ModelVariant::Full => "full".to_string(),
             });
-        let embedding_model = native_model_for(&config.embedding.model, variant.as_deref())?;
         Ok(Self {
             model: None,
-            embedding_model,
             model_name: config.embedding.model.clone(),
             variant,
             dimensions: config.embedding.dimensions,
@@ -151,12 +164,10 @@ impl NativeFastEmbedProvider {
         })
     }
 
-    #[cfg(feature = "native-fastembed")]
-    fn model(&mut self) -> Result<&mut TextEmbedding> {
+    #[cfg(feature = "native-candle")]
+    fn model(&mut self) -> Result<&mut NomicV15CandleEmbedding> {
         if self.model.is_none() {
-            self.model = Some(TextEmbedding::try_new(InitOptions::new(
-                self.embedding_model.clone(),
-            ))?);
+            self.model = Some(NomicV15CandleEmbedding::from_hf()?);
         }
         Ok(self.model.as_mut().expect("model was initialized"))
     }
@@ -366,9 +377,9 @@ impl HttpProvider {
     }
 }
 
-impl EmbeddingProvider for NativeFastEmbedProvider {
+impl EmbeddingProvider for NativeCandleProvider {
     fn profile(&self) -> EmbeddingProfile {
-        #[cfg(feature = "native-fastembed")]
+        #[cfg(feature = "native-candle")]
         {
             native_profile(
                 &self.model_name,
@@ -378,26 +389,26 @@ impl EmbeddingProvider for NativeFastEmbedProvider {
                 &self.query_prefix,
             )
         }
-        #[cfg(not(feature = "native-fastembed"))]
+        #[cfg(not(feature = "native-candle"))]
         {
             self.profile.clone()
         }
     }
 
     fn ensure_ready(&mut self) -> Result<()> {
-        #[cfg(feature = "native-fastembed")]
+        #[cfg(feature = "native-candle")]
         {
             let _ = self.model()?;
             Ok(())
         }
-        #[cfg(not(feature = "native-fastembed"))]
+        #[cfg(not(feature = "native-candle"))]
         {
-            native_fastembed_unavailable()
+            native_candle_unavailable()
         }
     }
 
     fn embed_documents(&mut self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
-        #[cfg(feature = "native-fastembed")]
+        #[cfg(feature = "native-candle")]
         {
             if texts.is_empty() {
                 Ok(Vec::new())
@@ -406,34 +417,34 @@ impl EmbeddingProvider for NativeFastEmbedProvider {
                     .iter()
                     .map(|text| format!("{}{}", self.document_prefix, text))
                     .collect::<Vec<_>>();
-                self.model()?.embed(prefixed, None)
+                self.model()?.embed(&prefixed)
             }
         }
-        #[cfg(not(feature = "native-fastembed"))]
+        #[cfg(not(feature = "native-candle"))]
         {
             let _ = texts;
-            native_fastembed_unavailable()
+            native_candle_unavailable()
         }
     }
 
     fn embed_query(&mut self, query: &str) -> Result<Vec<f32>> {
-        #[cfg(feature = "native-fastembed")]
+        #[cfg(feature = "native-candle")]
         {
             let prefixed = format!("{}{}", self.query_prefix, query);
-            let mut embeddings = self.model()?.embed(vec![prefixed], None)?;
+            let mut embeddings = self.model()?.embed(&[prefixed])?;
             embeddings
                 .pop()
-                .context("native fastembed returned no query embedding")
+                .context("native Candle returned no query embedding")
         }
-        #[cfg(not(feature = "native-fastembed"))]
+        #[cfg(not(feature = "native-candle"))]
         {
             let _ = query;
-            native_fastembed_unavailable()
+            native_candle_unavailable()
         }
     }
 }
 
-#[cfg(feature = "native-fastembed")]
+#[cfg(feature = "native-candle")]
 fn native_profile(
     model_name: &str,
     variant: Option<&str>,
@@ -444,7 +455,7 @@ fn native_profile(
     let mut profile = EmbeddingProfile {
         profile_hash: String::new(),
         provider: "native".into(),
-        engine: Some("fastembed".into()),
+        engine: Some("candle".into()),
         model: model_name.to_string(),
         variant: variant.map(str::to_string),
         endpoint: None,
@@ -459,7 +470,7 @@ fn native_profile(
     profile
 }
 
-#[cfg(not(feature = "native-fastembed"))]
+#[cfg(not(feature = "native-candle"))]
 fn native_profile_for_config(config: &Config) -> EmbeddingProfile {
     let variant = config
         .embedding
@@ -472,7 +483,7 @@ fn native_profile_for_config(config: &Config) -> EmbeddingProfile {
     let mut profile = EmbeddingProfile {
         profile_hash: String::new(),
         provider: "native".into(),
-        engine: Some("fastembed".into()),
+        engine: config.embedding.engine.clone(),
         model: config.embedding.model.clone(),
         variant: variant.map(str::to_string),
         endpoint: None,
@@ -487,12 +498,12 @@ fn native_profile_for_config(config: &Config) -> EmbeddingProfile {
     profile
 }
 
-#[cfg(not(feature = "native-fastembed"))]
-fn native_fastembed_unavailable<T>() -> Result<T> {
+#[cfg(not(feature = "native-candle"))]
+fn native_candle_unavailable<T>() -> Result<T> {
     anyhow::bail!(
-        "native fastembed is not available in this portable build.\n\
+        "native Candle embeddings are not available in this build.\n\
          Use `enf init --provider ollama --model nomic-embed-text` or another remote provider, \
-         or build enf from source with native fastembed enabled on a supported CPU."
+         or build enf from source with native-candle enabled."
     )
 }
 
@@ -768,16 +779,4 @@ fn bearer_token(env_name: &str) -> Result<String> {
     let value = env::var(env_name)
         .with_context(|| format!("missing API key environment variable {}", env_name))?;
     Ok(format!("Bearer {}", value))
-}
-
-#[cfg(feature = "native-fastembed")]
-fn native_model_for(model: &str, variant: Option<&str>) -> Result<EmbeddingModel> {
-    match (model, variant.unwrap_or("quantized")) {
-        ("nomic-embed-text-v1.5", "quantized") => Ok(EmbeddingModel::NomicEmbedTextV15Q),
-        ("nomic-embed-text-v1.5", "full") => Ok(EmbeddingModel::NomicEmbedTextV15),
-        _ => anyhow::bail!(
-            "unsupported native fastembed model profile: model={model}, variant={}",
-            variant.unwrap_or("none")
-        ),
-    }
 }

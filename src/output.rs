@@ -162,7 +162,7 @@ fn status_report(config: &Config, conn: &Connection) -> Result<StatusReport> {
         active_profile,
         model_installed: crate::models::is_active_model_installed(config)?,
         native_runtime_available: (config.embedding.provider == Provider::Native)
-            .then(native_fastembed_available),
+            .then(native_candle_available),
         counts: index_counts(config, conn)?,
         indexed_profiles: indexed_profiles(conn)?,
     })
@@ -201,9 +201,9 @@ fn doctor_report(config: &Config, conn: &Connection) -> Result<DoctorReport> {
 fn provider_check(config: &Config, model_installed: bool) -> Check {
     match config.embedding.provider {
         Provider::Native => {
-            if !native_fastembed_available() {
+            if !native_candle_available() {
                 return Check::warn(
-                    "native fastembed runtime is not included in this portable build",
+                    "native Candle runtime is not included in this build",
                     "enf init --provider ollama --model nomic-embed-text --force",
                 );
             }
@@ -222,8 +222,8 @@ fn provider_check(config: &Config, model_installed: bool) -> Check {
     }
 }
 
-fn native_fastembed_available() -> bool {
-    cfg!(feature = "native-fastembed")
+fn native_candle_available() -> bool {
+    cfg!(feature = "native-candle")
 }
 
 fn index_counts(config: &Config, conn: &Connection) -> Result<IndexCounts> {

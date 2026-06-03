@@ -64,6 +64,7 @@ fn install_persists_marker_and_sqlite_status_for_active_profile() {
     let mut config = Config::default();
     config.state.model_cache = ModelCache::Project;
 
+    std::env::set_var("ENF_SKIP_NATIVE_MODEL_LOAD", "1");
     install_active_model_in(&config, workspace.path(), Some(global_cache.path())).unwrap();
 
     let profile = active_profile(&config);

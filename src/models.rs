@@ -104,6 +104,11 @@ pub fn install_active_model_in(
     let path = cache_path_for(config, cwd, global_cache_dir);
     std::fs::create_dir_all(&path)?;
 
+    if should_load_native_model(config) {
+        let mut provider = crate::providers::build_provider(config)?;
+        provider.ensure_ready()?;
+    }
+
     let marker = InstalledModelMarker {
         status: "installed",
         cache_path: path.display().to_string(),
@@ -115,6 +120,12 @@ pub fn install_active_model_in(
     let conn = db::open_or_create(&cwd.join(&config.state.db_path))?;
     upsert_model_cache(&conn, config, &path, "installed")?;
     Ok(())
+}
+
+fn should_load_native_model(config: &Config) -> bool {
+    config.embedding.provider == crate::config::Provider::Native
+        && cfg!(feature = "native-candle")
+        && std::env::var("ENF_SKIP_NATIVE_MODEL_LOAD").as_deref() != Ok("1")
 }
 
 pub fn is_active_model_installed_in(

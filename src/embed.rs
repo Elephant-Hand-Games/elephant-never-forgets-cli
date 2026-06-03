@@ -2,7 +2,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
-use crate::config::{Config, ModelVariant};
+use crate::config::{Config, ModelVariant, Provider};
 
 pub const NORMALIZER_VERSION: &str = "normalizer-v1";
 pub const CHUNKER_VERSION: &str = "chunker-v1";
@@ -44,7 +44,11 @@ pub fn active_profile(config: &Config) -> EmbeddingProfile {
     let mut profile = EmbeddingProfile {
         profile_hash: String::new(),
         provider: config.embedding.provider.as_str().to_string(),
-        engine: config.embedding.engine.clone(),
+        engine: if config.embedding.provider == Provider::Native {
+            Some("candle".to_string())
+        } else {
+            config.embedding.engine.clone()
+        },
         model: config.embedding.model.clone(),
         variant,
         endpoint: config.embedding.endpoint.clone(),

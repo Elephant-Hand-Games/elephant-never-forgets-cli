@@ -53,12 +53,12 @@ Use this checklist for packaging-ready releases.
 - [ ] Final verification:
   - Confirm `enf --help` reflects all documented commands and flags
   - Confirm `enf init --db` + `enf status` end-to-end path still matches docs
-  - Confirm the Linux x64 release asset is built with the portable feature set
-    and starts on Debian-class x64 machines.
+  - Confirm the Linux x64 release asset includes native Candle embeddings and
+    starts on Debian-class x64 machines.
 
 ## Embedding pipeline release checks
 
-- [ ] Confirm docs state native fastembed as implemented and remove obsolete
+- [ ] Confirm docs state native Candle embeddings as implemented and remove obsolete
   "not implemented" language.
 - [ ] Confirm `enf models install` is documented as recording active profile/cache
   marker state for the selected cache scope.

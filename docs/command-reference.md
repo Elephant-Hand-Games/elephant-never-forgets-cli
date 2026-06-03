@@ -54,11 +54,8 @@ Plain `enf init` creates the default native SQLite project:
 enf init --db=sqlite --provider native --model nomic-embed-text-v1.5 --variant quantized
 ```
 
-Native init installs the active model profile.
-Published Linux x64 release binaries are portable builds; use
-`enf init --db --provider ollama --model nomic-embed-text` or another remote
-provider there unless you build from source with native fastembed enabled on a
-supported CPU.
+Native init records the active model profile. Published Linux x64 release
+binaries include the native Candle embedding runtime for local embeddings.
 
 ## `models`
 

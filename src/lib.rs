@@ -7,6 +7,8 @@ pub mod errors;
 pub mod extract;
 pub mod index;
 pub mod models;
+#[cfg(feature = "native-candle")]
+mod native_candle;
 pub mod output;
 pub mod providers;
 pub mod ranking;

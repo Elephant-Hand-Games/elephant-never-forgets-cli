@@ -16,6 +16,7 @@ fn run_init(temp_dir: &std::path::Path, extra_args: &[&str]) {
     Command::cargo_bin("enf")
         .unwrap()
         .current_dir(temp_dir)
+        .env("ENF_SKIP_NATIVE_MODEL_LOAD", "1")
         .args(args)
         .assert()
         .success();
@@ -84,7 +85,7 @@ fn init_supports_native_aliases_model_and_cache_overrides() {
                 "--model",
                 "nomic-embed-text-v1.5",
                 "--variant",
-                "full",
+                "quantized",
                 "--model-cache",
                 "project",
             ],
@@ -92,9 +93,9 @@ fn init_supports_native_aliases_model_and_cache_overrides() {
 
         let config = read_config(&temp.path().join(".enf.toml"));
         assert_eq!(config.embedding.provider, Provider::Native);
-        assert_eq!(config.embedding.engine.as_deref(), Some("fastembed"));
+        assert_eq!(config.embedding.engine.as_deref(), Some("candle"));
         assert_eq!(config.embedding.model, "nomic-embed-text-v1.5");
-        assert_eq!(config.embedding.variant, Some(ModelVariant::Full));
+        assert_eq!(config.embedding.variant, Some(ModelVariant::Quantized));
         assert_eq!(config.state.model_cache, ModelCache::Project);
         assert_eq!(config.embedding.endpoint, None);
         assert_eq!(config.embedding.api_key_env, None);
@@ -111,6 +112,7 @@ fn init_refuses_to_overwrite_existing_config_without_force() {
     Command::cargo_bin("enf")
         .unwrap()
         .current_dir(temp.path())
+        .env("ENF_SKIP_NATIVE_MODEL_LOAD", "1")
         .args(["init"])
         .assert()
         .failure()
@@ -131,6 +133,7 @@ fn init_db_false_requires_existing_database() {
     Command::cargo_bin("enf")
         .unwrap()
         .current_dir(temp.path())
+        .env("ENF_SKIP_NATIVE_MODEL_LOAD", "1")
         .args(["init", "--db=false"])
         .assert()
         .failure()

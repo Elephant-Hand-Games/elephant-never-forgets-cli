@@ -131,7 +131,7 @@ impl Default for Config {
             },
             embedding: EmbeddingConfig {
                 provider: Provider::Native,
-                engine: Some("fastembed".into()),
+                engine: Some("candle".into()),
                 model: "nomic-embed-text-v1.5".into(),
                 variant: Some(ModelVariant::Quantized),
                 endpoint: None,
@@ -244,10 +244,10 @@ pub fn init(args: InitArgs) -> Result<()> {
     }
 
     if args.install_models || config.embedding.provider == Provider::Native {
-        if config.embedding.provider == Provider::Native && !native_fastembed_available() {
+        if config.embedding.provider == Provider::Native && !native_candle_available() {
             println!("==> Recording native embedding profile");
             eprintln!(
-                "warning: this portable build does not include native fastembed; use an Ollama/OpenAI/HTTP provider or build from source with native fastembed enabled before indexing"
+                "warning: this build does not include native Candle embeddings; use an Ollama/OpenAI/HTTP provider or build from source with native-candle enabled before indexing"
             );
         } else {
             println!("==> Installing native embedding model");
@@ -278,8 +278,8 @@ pub fn init(args: InitArgs) -> Result<()> {
     Ok(())
 }
 
-fn native_fastembed_available() -> bool {
-    cfg!(feature = "native-fastembed")
+fn native_candle_available() -> bool {
+    cfg!(feature = "native-candle")
 }
 
 pub fn init_config(args: &InitArgs) -> Config {
@@ -311,7 +311,7 @@ fn format_config(config: &Config) -> Result<String> {
         "# Elephant Never Forgets project configuration\n\
          # Plain `enf init` creates this native SQLite setup:\n\
          #   enf init --db=sqlite --provider native --model nomic-embed-text-v1.5 --variant quantized\n\
-         # Native projects use fastembed locally. Remote providers can override provider/model/endpoint/api_key_env.\n\
+         # Native projects use Candle locally. Remote providers can override provider/model/endpoint/api_key_env.\n\
          # state.db_path is the project SQLite index; state.model_cache controls where native model assets are cached.\n\
          # index settings control text extraction/chunking. search weights control hybrid ranking.\n\n\
          {text}"
@@ -397,9 +397,12 @@ fn validate_embedding(config: &Config) -> Result<()> {
 
     match config.embedding.provider {
         Provider::Native => {
-            if config.embedding.engine.as_deref() != Some("fastembed") {
+            if !matches!(
+                config.embedding.engine.as_deref(),
+                Some("candle") | Some("fastembed-candle") | Some("fastembed")
+            ) {
                 anyhow::bail!(
-                    "embedding.engine must be \"fastembed\" when embedding.provider = \"native\""
+                    "embedding.engine must be \"candle\" when embedding.provider = \"native\""
                 );
             }
             if config.embedding.endpoint.is_some() {
@@ -414,7 +417,12 @@ fn validate_embedding(config: &Config) -> Result<()> {
             }
             if config.embedding.variant.is_none() {
                 anyhow::bail!(
-                    "embedding.variant is required when embedding.provider = \"native\"; use \"quantized\" or \"full\""
+                    "embedding.variant is required when embedding.provider = \"native\"; use \"quantized\""
+                );
+            }
+            if config.embedding.variant != Some(ModelVariant::Quantized) {
+                anyhow::bail!(
+                    "embedding.variant must be \"quantized\" for the native Candle model"
                 );
             }
         }
@@ -509,7 +517,7 @@ fn apply_init_overrides(config: &mut Config, args: &InitArgs) {
     }
     if args.native_embed || args.local_embed {
         config.embedding.provider = Provider::Native;
-        config.embedding.engine = Some("fastembed".into());
+        config.embedding.engine = Some("candle".into());
     }
     if let Some(model) = &args.model {
         config.embedding.model = model.clone();
@@ -526,10 +534,13 @@ fn apply_init_overrides(config: &mut Config, args: &InitArgs) {
 pub fn normalize_provider_defaults(config: &mut Config) {
     match config.embedding.provider {
         Provider::Native => {
-            config.embedding.engine = Some("fastembed".into());
+            config.embedding.engine = Some("candle".into());
             config.embedding.endpoint = None;
             config.embedding.api_key_env = None;
             config.embedding.dimensions = 768;
+            if config.embedding.model == "nomic-embed-text-v2-moe" {
+                config.embedding.model = "nomic-embed-text-v1.5".into();
+            }
             if config.embedding.variant.is_none() {
                 config.embedding.variant = Some(ModelVariant::Quantized);
             }

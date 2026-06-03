@@ -6,7 +6,9 @@ use serde_json::Value;
 use std::fs;
 
 fn enf() -> Command {
-    Command::cargo_bin("enf").unwrap()
+    let mut cmd = Command::cargo_bin("enf").unwrap();
+    cmd.env("ENF_SKIP_NATIVE_MODEL_LOAD", "1");
+    cmd
 }
 
 fn setup_indexed_project() -> tempfile::TempDir {
