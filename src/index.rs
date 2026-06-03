@@ -147,6 +147,10 @@ fn maybe_embed_missing_chunks(
         if chunks.is_empty() {
             break;
         }
+        let batch_start = embedded + 1;
+        let batch_end = embedded + chunks.len();
+        println!("==> Embedding chunks {batch_start}-{batch_end} of {total_missing}");
+        flush_stdout();
         let texts = chunks
             .iter()
             .map(|chunk| chunk.text.clone())
@@ -172,10 +176,23 @@ fn maybe_embed_missing_chunks(
 
 fn effective_embedding_batch_size(config: &Config) -> usize {
     if config.embedding.provider == Provider::Native {
-        config.embedding.batch_size.clamp(1, 8)
+        config
+            .embedding
+            .batch_size
+            .clamp(1, native_embedding_batch_cap())
     } else {
         config.embedding.batch_size.max(1)
     }
+}
+
+fn native_embedding_batch_cap() -> usize {
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    {
+        if !std::is_x86_feature_detected!("avx") {
+            return 1;
+        }
+    }
+    8
 }
 
 fn missing_embedding_count(conn: &rusqlite::Connection, profile_id: i64) -> Result<usize> {
