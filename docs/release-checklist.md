@@ -38,8 +38,7 @@ Use this checklist for packaging-ready releases.
   - `cargo package`
 - [ ] Build release archives through GitHub Actions tag workflow:
   - `git tag vX.Y.Z && git push origin vX.Y.Z`
-  - Confirm assets exist for Apple Silicon macOS, Intel macOS, Linux x64, and
-    Windows x64
+  - Confirm assets exist for Apple Silicon macOS, Linux x64, and Windows x64
 - [ ] Validate package artifact:
   - Confirm `Cargo.toml` metadata, readme linkage, and included files are correct
   - Run `cargo package --list` and confirm docs and runtime files are present

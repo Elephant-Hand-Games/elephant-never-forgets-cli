@@ -13,14 +13,12 @@ detect_target() {
     darwin)
       case "$arch" in
         arm64|aarch64) echo "aarch64-apple-darwin" ;;
-        x86_64|amd64) echo "x86_64-apple-darwin" ;;
         *) echo "unsupported architecture: $arch" >&2; exit 1 ;;
       esac
       ;;
     linux)
       case "$arch" in
         x86_64|amd64) echo "x86_64-unknown-linux-gnu" ;;
-        aarch64|arm64) echo "aarch64-unknown-linux-gnu" ;;
         *) echo "unsupported architecture: $arch" >&2; exit 1 ;;
       esac
       ;;

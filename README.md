@@ -44,7 +44,6 @@ cargo install --path . --locked
 Published binary targets:
 
 - `aarch64-apple-darwin` for Apple Silicon Macs
-- `x86_64-apple-darwin` for Intel Macs
 - `x86_64-unknown-linux-gnu` for Linux x64, including Debian x64
 - `x86_64-pc-windows-msvc` for Windows x64
 
