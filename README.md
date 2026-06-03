@@ -14,31 +14,27 @@ workflow files.
 
 ## Installation
 
-### Remote install
+### Install from the latest release
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/Elephant-Hand-Games/elephant-never-forgets-cli/main/scripts/install.sh | sh
 ```
 
-The installer downloads a prebuilt macOS, Linux, or Windows release archive when
-one exists. Before the first binary release, or when no archive exists for your
-platform, it falls back to installing from the Git repo with Cargo:
+This downloads the newest GitHub Release archive for your platform, installs the
+`enf` executable into `$HOME/.local/bin`, and adds that directory to your shell
+profile when it is not already on `PATH`. Restart your shell after install, or
+run the `export PATH=...` command printed by the installer.
+
+Install a specific release tag:
 
 ```sh
-cargo install --git https://github.com/Elephant-Hand-Games/elephant-never-forgets-cli.git --locked
+curl -fsSL https://raw.githubusercontent.com/Elephant-Hand-Games/elephant-never-forgets-cli/main/scripts/install.sh | ENF_VERSION=v1 sh
 ```
 
-The default binary install location for release archives is `$HOME/.local/bin`
-on Unix-like shells. Override it if needed:
+Install somewhere else:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/Elephant-Hand-Games/elephant-never-forgets-cli/main/scripts/install.sh | ENF_INSTALL_DIR=/usr/local/bin sh
-```
-
-### From a local checkout while developing
-
-```sh
-cargo install --path . --locked
 ```
 
 Published binary targets:
@@ -46,6 +42,19 @@ Published binary targets:
 - `aarch64-apple-darwin` for Apple Silicon Macs
 - `x86_64-unknown-linux-gnu` for Linux x64, including Debian x64
 - `x86_64-pc-windows-msvc` for Windows x64
+
+If no release archive exists for your platform, the installer falls back to
+installing from the Git repo with Cargo:
+
+```sh
+cargo install --git https://github.com/Elephant-Hand-Games/elephant-never-forgets-cli.git --locked
+```
+
+### From a local checkout while developing
+
+```sh
+cargo install --path . --locked
+```
 
 Homebrew support is practical now that release archives exist. It needs a tap
 formula with the release URL and SHA-256 checksum; the release workflow in this

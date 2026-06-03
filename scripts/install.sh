@@ -64,6 +64,43 @@ install_from_cargo() {
   fi
 }
 
+shell_profile() {
+  if [ -n "${ENF_PROFILE:-}" ]; then
+    echo "$ENF_PROFILE"
+    return
+  fi
+
+  shell_name="$(basename "${SHELL:-sh}")"
+  case "$shell_name" in
+    zsh) echo "$HOME/.zshrc" ;;
+    bash)
+      if [ "$(uname -s)" = "Darwin" ]; then
+        echo "$HOME/.bash_profile"
+      else
+        echo "$HOME/.bashrc"
+      fi
+      ;;
+    *) echo "$HOME/.profile" ;;
+  esac
+}
+
+ensure_on_path() {
+  case ":$PATH:" in
+    *":$INSTALL_DIR:"*) return ;;
+  esac
+
+  profile="$(shell_profile)"
+  line="export PATH=\"$INSTALL_DIR:\$PATH\""
+  if [ ! -f "$profile" ] || ! grep -F "$line" "$profile" >/dev/null 2>&1; then
+    {
+      printf '\n# Elephant Never Forgets CLI\n'
+      printf '%s\n' "$line"
+    } >> "$profile"
+    echo "added $INSTALL_DIR to PATH in $profile"
+  fi
+  echo "restart your shell or run: export PATH=\"$INSTALL_DIR:\$PATH\""
+}
+
 target="$(detect_target)"
 archive="enf-$target.tar.gz"
 binary="enf"
@@ -82,8 +119,10 @@ fi
 if download "$url" "$tmpdir/$archive"; then
   mkdir -p "$INSTALL_DIR"
   tar -xzf "$tmpdir/$archive" -C "$tmpdir"
-  install "$tmpdir/$binary" "$INSTALL_DIR/$binary"
+  cp "$tmpdir/$binary" "$INSTALL_DIR/$binary"
+  chmod 755 "$INSTALL_DIR/$binary"
   echo "installed $binary to $INSTALL_DIR/$binary"
+  ensure_on_path
 else
   echo "release archive unavailable for $target; falling back to cargo install" >&2
   install_from_cargo
