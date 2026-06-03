@@ -23,7 +23,7 @@ distribution method.
 ```sh
 enf init --db
 enf init --db --provider openai --model text-embedding-3-small --index
-enf init --db --force --force
+enf init --db --force --provider native --install-models
 ```
 
 `init` must currently include `--db` and can initialize with optional provider/model
@@ -75,7 +75,7 @@ command.
 - Ollama:
   `enf init --db --provider ollama --model nomic-embed-text`
 - OpenAI:
-  `enf init --db --provider openai --model text-embedding-3-small --api-key-env OPENAI_API_KEY`
+  `enf init --db --provider openai --model text-embedding-3-small`
 - OpenAI-compatible:
   `enf init --db --provider openai-compatible --endpoint https://provider.example.com/v1/embeddings`
 - Generic HTTP:
@@ -85,7 +85,7 @@ Per-command overrides (for `index`, `search`, `retrieve`):
 
 ```sh
 enf search "..." --provider openai --model text-embedding-3-small --json
-enf index . --provider local --model nomic-embed-text-v1.5
+enf index . --provider native --model nomic-embed-text-v1.5
 ```
 
 Notes:
@@ -93,7 +93,7 @@ Notes:
 - The OpenAI variant auto-maps `nomic-embed-text-v1.5` to `text-embedding-3-small`
   unless you explicitly set a supported model.
 - `openai` sets `OPENAI_API_KEY` as the default environment variable key if
-  `--api-key-env` is not provided.
+  a per-command `--api-key-env` override is not provided.
 - `--model-cache project` stores marker state in `.enf/models`, while `--model-cache
 global` uses the environment cache directory.
 
@@ -111,7 +111,7 @@ global` uses the environment cache directory.
 - `nomic-embed-text-v1.5` quantized profile
 - SQLite persistent store
 - FTS5 keyword index
-- Rust-side streamed vector scoring
+- Search output includes stored path/snippet payloads with configurable modes/limits
 - Query embedding cache
 - Chunk-level and file-level indexing
 - JSON output for automation and agent workflows
