@@ -5,19 +5,66 @@ use std::{
 };
 
 use anyhow::{Context, Result};
+use chrono::{DateTime, Utc};
 use rusqlite::{params, OptionalExtension, Transaction};
 
-use crate::{cli::IndexArgs, config::Config, db, discovery, extract, models, providers};
+use crate::{
+    cli::{IndexArgs, RemoveArgs},
+    config::{Config, Provider},
+    db, discovery, extract, models, providers,
+};
 
 pub fn run(args: IndexArgs) -> Result<()> {
     let config = crate::config::load()?;
     let cwd = std::env::current_dir()?;
-    index_path(&cwd, args.path, &config, args.install_models)
+    index_path(
+        &cwd,
+        args.path,
+        &config,
+        EmbedOptions {
+            install_models: args.install_models,
+            no_embed: args.no_embed,
+        },
+    )
 }
 
-pub fn index_path(root: &Path, path: PathBuf, config: &Config, install_models: bool) -> Result<()> {
+pub fn run_add(args: IndexArgs) -> Result<()> {
+    run(args)
+}
+
+pub fn run_remove(args: RemoveArgs) -> Result<()> {
+    let config = crate::config::load()?;
+    let cwd = std::env::current_dir()?;
+    remove_indexed_path(&cwd, args.path, &config)
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct EmbedOptions {
+    pub install_models: bool,
+    pub no_embed: bool,
+}
+
+impl From<bool> for EmbedOptions {
+    fn from(install_models: bool) -> Self {
+        Self {
+            install_models,
+            no_embed: false,
+        }
+    }
+}
+
+pub fn index_path(
+    root: &Path,
+    path: PathBuf,
+    config: &Config,
+    embed_options: impl Into<EmbedOptions>,
+) -> Result<()> {
+    let embed_options = embed_options.into();
     let db_path = root.join(&config.state.db_path);
     let mut conn = db::open_or_create(&db_path)?;
+
+    ensure_embedding_ready(root, config, embed_options)?;
+
     let tx = conn.transaction()?;
 
     let target = root.join(&path);
@@ -30,34 +77,44 @@ pub fn index_path(root: &Path, path: PathBuf, config: &Config, install_models: b
 
     remove_missing_files(&tx, &scope_prefix, &discovered_paths)?;
 
-    let mut indexed = 0usize;
+    let discovered_count = discovered.len();
+    let mut changed = 0usize;
     for file in discovered {
-        indexed += sync_file(&tx, &file, config)?;
+        changed += sync_file(&tx, &file, config)?;
     }
 
     tx.commit()?;
 
-    let embedded = maybe_embed_missing_chunks(root, &conn, config, install_models)?;
-    println!("Indexed {indexed} files");
+    let embedded = maybe_embed_missing_chunks(&conn, config, embed_options)?;
+    println!("==> Indexing {discovered_count} files");
+    println!("✓ Indexed {discovered_count} files ({changed} changed)");
     if embedded > 0 {
-        println!("Embedded {embedded} chunks");
+        println!("✓ Embedded {embedded} chunks");
+    }
+    Ok(())
+}
+
+pub fn remove_indexed_path(root: &Path, path: PathBuf, config: &Config) -> Result<()> {
+    let db_path = root.join(&config.state.db_path);
+    let mut conn = db::open_or_create(&db_path)?;
+    let tx = conn.transaction()?;
+    let normalized = normalize_index_path(root, &path)?;
+    let deleted = delete_indexed_path(&tx, &normalized)?;
+    tx.commit()?;
+    if deleted {
+        println!("✓ Removed {normalized} from index");
+    } else {
+        println!("warning: {normalized} was not present in the index");
     }
     Ok(())
 }
 
 fn maybe_embed_missing_chunks(
-    root: &Path,
     conn: &rusqlite::Connection,
     config: &Config,
-    install_models: bool,
+    embed_options: EmbedOptions,
 ) -> Result<usize> {
-    let global_cache_dir = dirs::cache_dir();
-    if install_models {
-        models::install_active_model_in(config, root, global_cache_dir.as_deref())?;
-    }
-    if !install_models
-        && !models::is_active_model_installed_in(config, root, global_cache_dir.as_deref())?
-    {
+    if embed_options.no_embed {
         return Ok(0);
     }
 
@@ -92,6 +149,26 @@ fn maybe_embed_missing_chunks(
     Ok(embedded)
 }
 
+fn ensure_embedding_ready(root: &Path, config: &Config, embed_options: EmbedOptions) -> Result<()> {
+    if embed_options.no_embed || config.embedding.provider != Provider::Native {
+        return Ok(());
+    }
+
+    let global_cache_dir = dirs::cache_dir();
+    if embed_options.install_models {
+        models::install_active_model_in(config, root, global_cache_dir.as_deref())?;
+        return Ok(());
+    }
+
+    if !models::is_active_model_installed_in(config, root, global_cache_dir.as_deref())? {
+        anyhow::bail!(
+            "native embedding model is not installed.\nRun:\n  enf models install\n\nOr initialize a new native project with:\n  enf init --db"
+        );
+    }
+
+    Ok(())
+}
+
 fn sync_file(
     tx: &Transaction<'_>,
     file: &discovery::DiscoveredFile,
@@ -100,9 +177,14 @@ fn sync_file(
     let extracted = extract::extract_text(&file.absolute_path)
         .with_context(|| format!("extracting {}", file.absolute_path.display()))?;
     let file_hash = blake3::hash(extracted.text.as_bytes()).to_hex().to_string();
-    let size_bytes = fs::metadata(&file.absolute_path)
-        .with_context(|| format!("reading metadata for {}", file.absolute_path.display()))?
-        .len() as i64;
+    let metadata = fs::metadata(&file.absolute_path)
+        .with_context(|| format!("reading metadata for {}", file.absolute_path.display()))?;
+    let size_bytes = metadata.len() as i64;
+    let modified_at = metadata
+        .modified()
+        .ok()
+        .map(|time| DateTime::<Utc>::from(time).to_rfc3339());
+    let file_type = file_type(&file.relative_path);
     let content = if config.index.store_full_files {
         Some(extracted.text.clone())
     } else {
@@ -112,6 +194,8 @@ fn sync_file(
     if let Some(existing) = load_file(tx, &file.relative_path)? {
         if existing.hash == file_hash
             && existing.size_bytes == size_bytes
+            && existing.file_type == file_type
+            && existing.modified_at == modified_at
             && existing.content == content
         {
             if !config.index.store_chunks && file_has_chunks(tx, existing.id)? {
@@ -123,10 +207,14 @@ fn sync_file(
         replace_indexed_file(
             tx,
             existing.id,
-            &file.relative_path,
-            &file_hash,
-            size_bytes,
-            content,
+            FileUpdate {
+                path: &file.relative_path,
+                file_type: &file_type,
+                hash: &file_hash,
+                size_bytes,
+                modified_at: modified_at.as_deref(),
+                content,
+            },
         )?;
         replace_chunks(
             tx,
@@ -139,9 +227,16 @@ fn sync_file(
     }
 
     tx.execute(
-        "INSERT INTO files(path, hash, size_bytes, indexed_at, content)
-         VALUES (?1, ?2, ?3, datetime('now'), ?4)",
-        params![file.relative_path, file_hash, size_bytes, content],
+        "INSERT INTO files(path, file_type, hash, size_bytes, modified_at, indexed_at, content)
+         VALUES (?1, ?2, ?3, ?4, ?5, datetime('now'), ?6)",
+        params![
+            file.relative_path,
+            file_type,
+            file_hash,
+            size_bytes,
+            modified_at.as_deref(),
+            content
+        ],
     )?;
     let file_id = tx.last_insert_rowid();
     insert_chunks(tx, file_id, &file.relative_path, &extracted.text, config)?;
@@ -159,7 +254,7 @@ fn file_has_chunks(tx: &Transaction<'_>, file_id: i64) -> Result<bool> {
 fn load_file(tx: &Transaction<'_>, path: &str) -> Result<Option<FileRecord>> {
     Ok(tx
         .query_row(
-            "SELECT id, hash, size_bytes, content FROM files WHERE path = ?1",
+            "SELECT id, hash, size_bytes, content, file_type, modified_at FROM files WHERE path = ?1",
             [path],
             |row| {
                 Ok(FileRecord {
@@ -167,25 +262,28 @@ fn load_file(tx: &Transaction<'_>, path: &str) -> Result<Option<FileRecord>> {
                     hash: row.get(1)?,
                     size_bytes: row.get(2)?,
                     content: row.get(3)?,
+                    file_type: row.get(4)?,
+                    modified_at: row.get(5)?,
                 })
             },
         )
         .optional()?)
 }
 
-fn replace_indexed_file(
-    tx: &Transaction<'_>,
-    file_id: i64,
-    path: &str,
-    hash: &str,
-    size_bytes: i64,
-    content: Option<String>,
-) -> Result<()> {
+fn replace_indexed_file(tx: &Transaction<'_>, file_id: i64, update: FileUpdate<'_>) -> Result<()> {
     tx.execute(
         "UPDATE files
-         SET path = ?2, hash = ?3, size_bytes = ?4, indexed_at = datetime('now'), content = ?5
+         SET path = ?2, file_type = ?3, hash = ?4, size_bytes = ?5, modified_at = ?6, indexed_at = datetime('now'), content = ?7
          WHERE id = ?1",
-        params![file_id, path, hash, size_bytes, content],
+        params![
+            file_id,
+            update.path,
+            update.file_type,
+            update.hash,
+            update.size_bytes,
+            update.modified_at,
+            update.content
+        ],
     )?;
     Ok(())
 }
@@ -304,6 +402,20 @@ fn delete_indexed_file(tx: &Transaction<'_>, file_id: i64) -> Result<()> {
     Ok(())
 }
 
+fn delete_indexed_path(tx: &Transaction<'_>, path: &str) -> Result<bool> {
+    let file_id = tx
+        .query_row("SELECT id FROM files WHERE path = ?1", [path], |row| {
+            row.get::<_, i64>(0)
+        })
+        .optional()?;
+    if let Some(file_id) = file_id {
+        delete_indexed_file(tx, file_id)?;
+        Ok(true)
+    } else {
+        Ok(false)
+    }
+}
+
 fn is_within_scope(path: &str, scope_prefix: &str) -> bool {
     if scope_prefix.is_empty() {
         return true;
@@ -327,11 +439,34 @@ fn scope_prefix(path: &Path) -> String {
     }
 }
 
+fn normalize_index_path(root: &Path, path: &Path) -> Result<String> {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        root.join(path)
+    };
+    let relative = absolute
+        .strip_prefix(root)
+        .with_context(|| format!("{} is outside {}", absolute.display(), root.display()))?;
+    Ok(relative.to_string_lossy().replace('\\', "/"))
+}
+
 #[derive(Debug, Clone)]
 struct FileRecord {
     id: i64,
     hash: String,
     size_bytes: i64,
+    file_type: String,
+    modified_at: Option<String>,
+    content: Option<String>,
+}
+
+struct FileUpdate<'a> {
+    path: &'a str,
+    file_type: &'a str,
+    hash: &'a str,
+    size_bytes: i64,
+    modified_at: Option<&'a str>,
     content: Option<String>,
 }
 
@@ -428,4 +563,12 @@ fn overlap_start(lines: &[&str], start: usize, end: usize, overlap_tokens: usize
 
 fn count_tokens(line: &str) -> usize {
     line.split_whitespace().count()
+}
+
+fn file_type(path: &str) -> String {
+    Path::new(path)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(|extension| extension.to_ascii_lowercase())
+        .unwrap_or_default()
 }

@@ -21,7 +21,7 @@ fn setup_project() -> tempfile::TempDir {
         .success();
     enf()
         .current_dir(temp.path())
-        .args(["index", "."])
+        .args(["index", "--no-embed", "."])
         .assert()
         .success();
     temp
@@ -47,10 +47,11 @@ fn status_reports_index_counts_and_active_profile() {
     assert_eq!(json["counts"]["active_profile_embeddings"], 0);
     assert_eq!(json["counts"]["missing_active_profile_embeddings"], 1);
     assert_eq!(json["active_profile"]["provider"], "native");
+    assert_eq!(json["model_installed"], true);
 }
 
 #[test]
-fn doctor_reports_missing_native_model_without_loading_it() {
+fn doctor_reports_native_model_ready_after_init() {
     let temp = setup_project();
 
     let output = enf()
@@ -63,12 +64,12 @@ fn doctor_reports_missing_native_model_without_loading_it() {
         .clone();
     let json: Value = serde_json::from_slice(&output).unwrap();
 
-    assert_eq!(json["ok"], false);
+    assert_eq!(json["ok"], true);
     assert_eq!(json["config"]["ok"], true);
     assert_eq!(json["database"]["ok"], true);
     assert_eq!(json["fts5"]["ok"], true);
-    assert_eq!(json["model"]["ok"], false);
-    assert_eq!(json["provider"]["remediation"], "enf models install");
+    assert_eq!(json["model"]["ok"], true);
+    assert_eq!(json["provider"]["ok"], true);
 }
 
 #[test]

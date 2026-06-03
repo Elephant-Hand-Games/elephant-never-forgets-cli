@@ -21,6 +21,8 @@ pub enum Command {
     Init(InitArgs),
     Models(ModelsArgs),
     Index(IndexArgs),
+    Add(IndexArgs),
+    Remove(RemoveArgs),
     Search(SearchArgs),
     Retrieve(SearchArgs),
     Status(StatusArgs),
@@ -30,8 +32,8 @@ pub enum Command {
 
 #[derive(Debug, Args)]
 pub struct InitArgs {
-    #[arg(long)]
-    pub db: bool,
+    #[arg(long, default_value = "sqlite", default_missing_value = "sqlite", num_args = 0..=1)]
+    pub db: DbArg,
     #[arg(long)]
     pub native_embed: bool,
     #[arg(long, alias = "local-embed")]
@@ -86,10 +88,17 @@ pub struct IndexArgs {
     pub changed_only: bool,
     #[arg(long)]
     pub install_models: bool,
+    #[arg(long)]
+    pub no_embed: bool,
     #[command(flatten)]
     pub provider: ProviderOverrideArgs,
     #[arg(long)]
     pub json: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct RemoveArgs {
+    pub path: PathBuf,
 }
 
 #[derive(Debug, Args, Clone)]
@@ -162,6 +171,12 @@ pub enum ProviderArg {
     Http,
 }
 
+#[derive(Clone, Debug, ValueEnum, PartialEq, Eq)]
+pub enum DbArg {
+    Sqlite,
+    False,
+}
+
 #[derive(Clone, Debug, ValueEnum)]
 pub enum ModelVariantArg {
     Quantized,
@@ -194,6 +209,8 @@ pub fn run() -> anyhow::Result<()> {
         Command::Init(args) => config::init(args),
         Command::Models(args) => models::run(args),
         Command::Index(args) => index::run(args),
+        Command::Add(args) => index::run_add(args),
+        Command::Remove(args) => index::run_remove(args),
         Command::Search(args) => search::run(args, false),
         Command::Retrieve(args) => search::run(args, true),
         Command::Status(args) => output::status(args),

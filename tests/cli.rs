@@ -17,7 +17,7 @@ fn init_creates_config_and_database() {
     let temp = tempfile::tempdir().unwrap();
     let mut cmd = Command::cargo_bin("enf").unwrap();
     cmd.current_dir(temp.path())
-        .args(["init", "--db"])
+        .arg("init")
         .assert()
         .success()
         .stdout(predicate::str::contains(
@@ -34,7 +34,7 @@ fn init_defaults_to_native_profile() {
     Command::cargo_bin("enf")
         .unwrap()
         .current_dir(temp.path())
-        .args(["init", "--db"])
+        .arg("init")
         .assert()
         .success();
 

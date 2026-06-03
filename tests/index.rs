@@ -84,14 +84,65 @@ fn index_keeps_chunk_stability_for_unchanged_files() {
     );
     write_file(root, "notes/other.txt", "alpha");
 
-    index::index_path(root, PathBuf::from("."), &config, false).unwrap();
+    index::index_path(
+        root,
+        PathBuf::from("."),
+        &config,
+        index::EmbedOptions {
+            install_models: false,
+            no_embed: true,
+        },
+    )
+    .unwrap();
     let before = chunk_rows(root, "docs/story.txt");
 
     write_file(root, "notes/other.txt", "alpha beta gamma");
-    index::index_path(root, PathBuf::from("."), &config, false).unwrap();
+    index::index_path(
+        root,
+        PathBuf::from("."),
+        &config,
+        index::EmbedOptions {
+            install_models: false,
+            no_embed: true,
+        },
+    )
+    .unwrap();
     let after = chunk_rows(root, "docs/story.txt");
 
     assert_eq!(before, after);
+}
+
+#[test]
+fn index_requires_installed_native_model_unless_embedding_is_disabled() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    let mut config = test_config();
+    config.state.model_cache = elephant_never_forgets::config::ModelCache::Project;
+
+    write_file(root, "docs/story.txt", "one two three four");
+
+    let err = index::index_path(root, PathBuf::from("."), &config, false)
+        .expect_err("index should fail before syncing files when native model is missing");
+    assert!(err
+        .to_string()
+        .contains("native embedding model is not installed"));
+
+    index::index_path(
+        root,
+        PathBuf::from("."),
+        &config,
+        index::EmbedOptions {
+            install_models: false,
+            no_embed: true,
+        },
+    )
+    .unwrap();
+
+    let conn = db_connection(root);
+    let files: i64 = conn
+        .query_row("SELECT COUNT(*) FROM files", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(files, 1);
 }
 
 #[test]
@@ -103,9 +154,27 @@ fn index_removes_deleted_files_when_root_is_reindexed() {
     write_file(root, "docs/kept.txt", "keep me");
     write_file(root, "docs/gone.txt", "delete me");
 
-    index::index_path(root, PathBuf::from("."), &config, false).unwrap();
+    index::index_path(
+        root,
+        PathBuf::from("."),
+        &config,
+        index::EmbedOptions {
+            install_models: false,
+            no_embed: true,
+        },
+    )
+    .unwrap();
     fs::remove_file(root.join("docs/gone.txt")).unwrap();
-    index::index_path(root, Path::new(".").to_path_buf(), &config, false).unwrap();
+    index::index_path(
+        root,
+        Path::new(".").to_path_buf(),
+        &config,
+        index::EmbedOptions {
+            install_models: false,
+            no_embed: true,
+        },
+    )
+    .unwrap();
 
     let conn = db_connection(root);
     let mut stmt = conn
@@ -122,6 +191,43 @@ fn index_removes_deleted_files_when_root_is_reindexed() {
 }
 
 #[test]
+fn explicit_file_indexing_records_file_type_and_remove_deletes_it() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    let config = test_config();
+
+    write_file(root, "metadata/custom.weird", "semantic custom metadata");
+    index::index_path(
+        root,
+        PathBuf::from("metadata/custom.weird"),
+        &config,
+        index::EmbedOptions {
+            install_models: false,
+            no_embed: true,
+        },
+    )
+    .unwrap();
+
+    let conn = db_connection(root);
+    let file_type: String = conn
+        .query_row(
+            "SELECT file_type FROM files WHERE path = 'metadata/custom.weird'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(file_type, "weird");
+    drop(conn);
+
+    index::remove_indexed_path(root, PathBuf::from("metadata/custom.weird"), &config).unwrap();
+    let conn = db_connection(root);
+    let files: i64 = conn
+        .query_row("SELECT COUNT(*) FROM files", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(files, 0);
+}
+
+#[test]
 fn index_honors_store_full_files_and_store_chunks_flags() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path();
@@ -130,7 +236,16 @@ fn index_honors_store_full_files_and_store_chunks_flags() {
     config.index.store_chunks = false;
 
     write_file(root, "docs/config.txt", "alpha beta gamma");
-    index::index_path(root, PathBuf::from("."), &config, false).unwrap();
+    index::index_path(
+        root,
+        PathBuf::from("."),
+        &config,
+        index::EmbedOptions {
+            install_models: false,
+            no_embed: true,
+        },
+    )
+    .unwrap();
 
     let conn = db_connection(root);
     let content: Option<String> = conn

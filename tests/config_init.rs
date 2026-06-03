@@ -10,7 +10,7 @@ fn read_config(path: &std::path::Path) -> Config {
 }
 
 fn run_init(temp_dir: &std::path::Path, extra_args: &[&str]) {
-    let mut args = vec!["init", "--db"];
+    let mut args = vec!["init"];
     args.extend(extra_args.iter().copied());
 
     Command::cargo_bin("enf")
@@ -82,7 +82,7 @@ fn init_supports_native_aliases_model_and_cache_overrides() {
             &[
                 native_flag,
                 "--model",
-                "custom-embed-model",
+                "nomic-embed-text-v1.5",
                 "--variant",
                 "full",
                 "--model-cache",
@@ -93,7 +93,7 @@ fn init_supports_native_aliases_model_and_cache_overrides() {
         let config = read_config(&temp.path().join(".enf.toml"));
         assert_eq!(config.embedding.provider, Provider::Native);
         assert_eq!(config.embedding.engine.as_deref(), Some("fastembed"));
-        assert_eq!(config.embedding.model, "custom-embed-model");
+        assert_eq!(config.embedding.model, "nomic-embed-text-v1.5");
         assert_eq!(config.embedding.variant, Some(ModelVariant::Full));
         assert_eq!(config.state.model_cache, ModelCache::Project);
         assert_eq!(config.embedding.endpoint, None);
@@ -111,7 +111,7 @@ fn init_refuses_to_overwrite_existing_config_without_force() {
     Command::cargo_bin("enf")
         .unwrap()
         .current_dir(temp.path())
-        .args(["init", "--db"])
+        .args(["init"])
         .assert()
         .failure()
         .stderr(predicates::str::contains("config already exists at"))
@@ -122,6 +122,23 @@ fn init_refuses_to_overwrite_existing_config_without_force() {
         "sentinel = true\n"
     );
     assert!(!temp.path().join(".enf/index.sqlite").exists());
+}
+
+#[test]
+fn init_db_false_requires_existing_database() {
+    let temp = tempfile::tempdir().unwrap();
+
+    Command::cargo_bin("enf")
+        .unwrap()
+        .current_dir(temp.path())
+        .args(["init", "--db=false"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains(
+            "--db=false requires an existing database",
+        ));
+
+    assert!(!temp.path().join(".enf.toml").exists());
 }
 
 #[test]

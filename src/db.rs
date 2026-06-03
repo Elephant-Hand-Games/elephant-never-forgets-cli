@@ -33,7 +33,8 @@ pub struct VectorChunkRow {
     pub vector: Vec<f32>,
 }
 
-const MIGRATIONS: &[&str] = &[r#"
+const MIGRATIONS: &[&str] = &[
+    r#"
 PRAGMA journal_mode = WAL;
 PRAGMA foreign_keys = ON;
 
@@ -122,7 +123,11 @@ CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
   content='',
   tokenize='porter unicode61'
 );
-"#];
+"#,
+    r#"
+ALTER TABLE files ADD COLUMN file_type TEXT NOT NULL DEFAULT '';
+"#,
+];
 
 pub fn open_or_create(path: &Path) -> Result<Connection> {
     if let Some(parent) = path.parent() {

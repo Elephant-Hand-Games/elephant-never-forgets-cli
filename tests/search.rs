@@ -30,7 +30,7 @@ fn setup_indexed_project() -> tempfile::TempDir {
         .success();
     enf()
         .current_dir(temp.path())
-        .args(["index", "."])
+        .args(["index", "--no-embed", "."])
         .assert()
         .success()
         .stdout(predicate::str::contains("Indexed"));
@@ -193,7 +193,7 @@ fn provider_overrides_use_a_distinct_profile_for_search() {
 }
 
 #[test]
-fn vector_mode_without_native_vectors_reports_missing_model() {
+fn vector_mode_without_vectors_reports_missing_index_embeddings() {
     let temp = setup_indexed_project();
 
     enf()
@@ -201,7 +201,8 @@ fn vector_mode_without_native_vectors_reports_missing_model() {
         .args(["search", "zebra", "--mode", "vector"])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("enf models install"));
+        .stderr(predicate::str::contains("has no indexed embeddings"))
+        .stderr(predicate::str::contains("enf index ."));
 }
 
 #[test]

@@ -28,7 +28,7 @@ run the `export PATH=...` command printed by the installer.
 Install a specific release tag:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Elephant-Hand-Games/elephant-never-forgets-cli/main/scripts/install.sh | ENF_VERSION=v1 sh
+curl -fsSL https://raw.githubusercontent.com/Elephant-Hand-Games/elephant-never-forgets-cli/main/scripts/install.sh | ENF_VERSION=v1.1.0 sh
 ```
 
 Install somewhere else:
@@ -65,13 +65,22 @@ repo produces the archives and checksums that formula would use.
 ### Install
 
 ```sh
-enf init --db
+enf init
+enf init --db=sqlite
+enf init --db=false
 enf init --db --provider openai --model text-embedding-3-small --index
-enf init --db --force --provider native --install-models
+enf init --db --force --provider native
 ```
 
-`init` must currently include `--db` and can initialize with optional provider/model
-overrides.
+Plain `enf init` is equivalent to:
+
+```sh
+enf init --db=sqlite --provider native --model nomic-embed-text-v1.5 --variant quantized
+```
+
+Native projects install the active model profile during initialization. Use
+`--db=false` only when `.enf/index.sqlite` already exists and you want init to
+write/refresh config without creating the database.
 
 ### Model
 
@@ -87,9 +96,22 @@ enf models gc
 
 ```sh
 enf index .
+enf add ./file.ehmeta
+enf remove ./old-note.md
 enf index ./docs --reembed --json
-enf index ./notes --changed-only --install-models
+enf index ./notes --changed-only
+enf index --no-embed ./docs
 ```
+
+`index` embeds chunks for the active profile. For the native provider, indexing
+fails if the active model profile is missing; run `enf models install` to repair
+an older project. Use `--no-embed` only for metadata-only indexing. Indexed file
+metadata includes relative path, file type/extension, size, modified time, hash,
+full text when enabled, chunks, line ranges, token counts, and embeddings.
+`add` indexes an explicit file or directory path. Explicit file paths are indexed
+even when their extension is not in the default include list, unless they match
+an exclude pattern. `remove` deletes a file path from the index without deleting
+it from disk.
 
 ### Search
 
@@ -98,6 +120,9 @@ enf search "where are the agent editing rules?"
 enf search "release notes" --mode hybrid --level chunk --limit 20
 enf retrieve "debugging command output" --json
 ```
+
+Plain text search output wraps matched file paths in local terminal hyperlinks
+when your terminal supports OSC 8 links.
 
 ### Status / Doctor / CI
 
@@ -171,8 +196,9 @@ custom HTTP embedding endpoints.
 
 - `enf models install` currently prepares and records the active model profile,
   then writes/updates the cache marker under the resolved model cache path.
-- `enf index --install-models <path>` records the active profile and embeds missing
-  chunks for that profile.
+- `enf index <path>` embeds missing chunks for the active profile.
+- `enf index --no-embed <path>` skips embedding and is intended only for
+  metadata-only workflows.
 - `enf search` and `enf retrieve` combine keyword matches with stored chunk vectors
   when embeddings exist, cache query embeddings by normalized query, and continue
   to return text-backed results when no chunk vectors are present.

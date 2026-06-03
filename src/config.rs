@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     cli::{
-        InitArgs, ModelCacheArg, ModelVariantArg, ProviderArg, ProviderOverrideArgs,
+        DbArg, InitArgs, ModelCacheArg, ModelVariantArg, ProviderArg, ProviderOverrideArgs,
         SearchLevelArg, SearchModeArg,
     },
     db,
@@ -204,10 +204,6 @@ impl Default for Config {
 }
 
 pub fn init(args: InitArgs) -> Result<()> {
-    if !args.db {
-        anyhow::bail!("init currently requires --db");
-    }
-
     let cwd = std::env::current_dir().context("reading current directory")?;
     let config_path = cwd.join(CONFIG_FILE);
     if config_path.exists() && !args.force {
@@ -219,25 +215,59 @@ pub fn init(args: InitArgs) -> Result<()> {
 
     let config = init_config(&args);
     validate(&config)?;
+    let db_enabled = args.db == DbArg::Sqlite;
+    let db_path = cwd.join(&config.state.db_path);
+
+    if !db_enabled && !db_path.exists() {
+        anyhow::bail!(
+            "--db=false requires an existing database at {}; use `enf init` or `enf init --db=sqlite` to create one",
+            config.state.db_path
+        );
+    }
+    if !db_enabled && args.index {
+        anyhow::bail!("--index requires database initialization; use `enf init --index` or run `enf index .` later");
+    }
 
     fs::create_dir_all(cwd.join(STATE_DIR)).context("creating .enf directory")?;
     fs::create_dir_all(cwd.join(CACHE_DIR)).context("creating .enf/cache directory")?;
     write_config(&config_path, &config)?;
     ensure_gitignore(&cwd.join(".gitignore"))?;
-    db::open_or_create(&cwd.join(&config.state.db_path))?;
+    if db_enabled {
+        if db_path.exists() {
+            eprintln!(
+                "warning: database already exists at {}; leaving existing data in place",
+                config.state.db_path
+            );
+        }
+        println!("==> Preparing SQLite index");
+        db::open_or_create(&db_path)?;
+    }
 
-    if args.install_models {
+    if args.install_models || config.embedding.provider == Provider::Native {
+        println!("==> Installing native embedding model");
         crate::models::install_active_model(&config)?;
     }
 
     if args.index {
-        crate::index::index_path(&cwd, PathBuf::from("."), &config, args.install_models)?;
+        crate::index::index_path(
+            &cwd,
+            PathBuf::from("."),
+            &config,
+            crate::index::EmbedOptions {
+                install_models: args.install_models,
+                no_embed: false,
+            },
+        )?;
     }
 
-    println!("Initialized Elephant Never Forgets project");
-    println!("  config: {}", CONFIG_FILE);
-    println!("  database: {}", config.state.db_path);
-    println!("  provider: {}", config.embedding.provider.as_str());
+    println!("✓ Initialized Elephant Never Forgets project");
+    println!("✓ Config: {}", CONFIG_FILE);
+    if db_enabled {
+        println!("✓ Database: {}", config.state.db_path);
+    } else {
+        println!("✓ Database: existing database required, creation skipped");
+    }
+    println!("✓ Provider: {}", config.embedding.provider.as_str());
     Ok(())
 }
 
@@ -260,8 +290,21 @@ pub fn load() -> Result<Config> {
 }
 
 pub fn write_config(path: &std::path::Path, config: &Config) -> Result<()> {
-    let text = toml::to_string_pretty(config).context("serializing config")?;
+    let text = format_config(config)?;
     fs::write(path, text).with_context(|| format!("writing {}", path.display()))
+}
+
+fn format_config(config: &Config) -> Result<String> {
+    let text = toml::to_string_pretty(config).context("serializing config")?;
+    Ok(format!(
+        "# Elephant Never Forgets project configuration\n\
+         # Plain `enf init` creates this native SQLite setup:\n\
+         #   enf init --db=sqlite --provider native --model nomic-embed-text-v1.5 --variant quantized\n\
+         # Native projects use fastembed locally. Remote providers can override provider/model/endpoint/api_key_env.\n\
+         # state.db_path is the project SQLite index; state.model_cache controls where native model assets are cached.\n\
+         # index settings control text extraction/chunking. search weights control hybrid ranking.\n\n\
+         {text}"
+    ))
 }
 
 pub fn validate(config: &Config) -> Result<()> {

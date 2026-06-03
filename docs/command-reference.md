@@ -13,6 +13,8 @@ Commands:
 - `init`
 - `models`
 - `index`
+- `add`
+- `remove`
 - `search`
 - `retrieve`
 - `status`
@@ -24,12 +26,14 @@ Commands:
 Initialize project state and write `.enf.toml`.
 
 ```text
-enf init [--db] [--native-embed|--local-embed] [--provider <provider>] [--model <model>] [--variant <variant>] [--model-cache <scope>] [--install-models] [--index] [--force]
+enf init [--db[=<sqlite|false>]] [--native-embed|--local-embed] [--provider <provider>] [--model <model>] [--variant <variant>] [--model-cache <scope>] [--install-models] [--index] [--force]
 ```
 
 Flags:
 
-- `--db` (required by current implementation)
+- `--db[=<sqlite|false>]`
+  - omitted or `--db` means `sqlite`
+  - `--db=false` skips DB creation and requires the configured DB to already exist
 - `--native-embed` (alias: `--local-embed`)
 - `--provider <provider>` where `<provider>` is one of:
   - `native`
@@ -43,6 +47,14 @@ Flags:
 - `--install-models`
 - `--index`
 - `--force`
+
+Plain `enf init` creates the default native SQLite project:
+
+```text
+enf init --db=sqlite --provider native --model nomic-embed-text-v1.5 --variant quantized
+```
+
+Native init installs the active model profile.
 
 ## `models`
 
@@ -82,7 +94,7 @@ Subcommands:
 Index files into the local SQLite database.
 
 ```text
-enf index [path] [--reembed] [--changed-only] [--install-models] [--provider <provider>] [--model <model>] [--variant <variant>] [--endpoint <url>] [--api-key-env <env-var>] [--dimensions <usize>] [--json]
+enf index [path] [--reembed] [--changed-only] [--install-models] [--no-embed] [--provider <provider>] [--model <model>] [--variant <variant>] [--endpoint <url>] [--api-key-env <env-var>] [--dimensions <usize>] [--json]
 ```
 
 Flags:
@@ -91,6 +103,7 @@ Flags:
 - `--reembed`
 - `--changed-only`
 - `--install-models`
+- `--no-embed`
 - `--json`
 - Provider overrides:
   - `--provider <provider>`
@@ -99,6 +112,33 @@ Flags:
   - `--endpoint <url>`
   - `--api-key-env <env-var>`
   - `--dimensions <usize>`
+
+Notes:
+- Native `init` installs the active model profile by default.
+- `index` embeds chunks for the active profile and fails if the native model
+  profile is missing.
+- `--no-embed` intentionally skips embedding for metadata-only indexing.
+- Explicit file paths are indexed even when their extension is not in the
+  default include list, unless excluded.
+
+## `add`
+
+Index an explicit file or directory path.
+
+```text
+enf add <path> [same options as index]
+```
+
+`add` is an alias for explicit indexing. It is useful for custom file types such
+as `.ehmeta`.
+
+## `remove`
+
+Remove an indexed file path from SQLite without deleting it from disk.
+
+```text
+enf remove <path>
+```
 
 ## `search`
 
@@ -125,6 +165,7 @@ Notes:
   hybrid ranking over vector similarity, keyword score, and metadata score.
 - Query embeddings are cached by normalized query. `--cached-query-only` fails if
   the query vector is not already cached for the active profile.
+- Plain text output wraps file paths in OSC 8 terminal hyperlinks when supported.
 
 ## `retrieve`
 

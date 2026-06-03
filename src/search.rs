@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use crate::{
     cli::SearchArgs,
-    config::{Provider, SearchLevel, SearchMode},
+    config::{SearchLevel, SearchMode},
     errors::EnfError,
     ranking::{self, RankedResult},
 };
@@ -61,13 +61,14 @@ pub fn run(args: SearchArgs, retrieve: bool) -> Result<()> {
     if mode != SearchMode::Keyword {
         let has_vectors = active_profile_has_vectors(&conn, profile_id)?;
         if !has_vectors {
-            if mode == SearchMode::Vector && config.embedding.provider == Provider::Native {
-                return Err(EnfError::NativeModelMissing.into());
-            }
-            warnings.push(format!(
-                "active profile {} has no indexed embeddings; run `enf index --install-models .` to populate vectors",
+            let message = format!(
+                "active profile {} has no indexed embeddings; run `enf index .` to populate vectors",
                 profile.profile_hash
-            ));
+            );
+            if mode == SearchMode::Vector {
+                anyhow::bail!("{message}");
+            }
+            warnings.push(message);
         }
         let vector_search = VectorSearch {
             conn: &conn,
@@ -104,10 +105,11 @@ pub fn run(args: SearchArgs, retrieve: bool) -> Result<()> {
             eprintln!("warning: {warning}");
         }
         for result in results {
+            let label = result_label(&cwd, &result);
             if let (Some(start), Some(end)) = (result.start_line, result.end_line) {
-                println!("{}:{}-{}  {:.3}", result.path, start, end, result.score);
+                println!("{label}:{start}-{end}  {:.3}", result.score);
             } else {
-                println!("{}  {:.3}", result.path, result.score);
+                println!("{label}  {:.3}", result.score);
             }
         }
     }
@@ -116,6 +118,28 @@ pub fn run(args: SearchArgs, retrieve: bool) -> Result<()> {
 
 fn active_profile_has_vectors(conn: &rusqlite::Connection, profile_id: i64) -> Result<bool> {
     Ok(!crate::db::vector_chunks_for_profile(conn, profile_id, 1, 0)?.is_empty())
+}
+
+fn result_label(cwd: &std::path::Path, result: &RankedResult) -> String {
+    let path = cwd.join(&result.path);
+    let mut url = format!("file://{}", percent_encode(&path.to_string_lossy()));
+    if let Some(line) = result.start_line {
+        url.push_str(&format!("#L{line}"));
+    }
+    format!("\x1b]8;;{url}\x1b\\{}\x1b]8;;\x1b\\", result.path)
+}
+
+fn percent_encode(input: &str) -> String {
+    let mut encoded = String::new();
+    for byte in input.as_bytes() {
+        match *byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'/' | b'.' | b'-' | b'_' | b'~' | b':' => {
+                encoded.push(*byte as char)
+            }
+            other => encoded.push_str(&format!("%{other:02X}")),
+        }
+    }
+    encoded
 }
 
 #[derive(Clone, Copy)]

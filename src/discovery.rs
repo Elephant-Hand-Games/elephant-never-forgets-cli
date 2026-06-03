@@ -17,6 +17,18 @@ pub fn discover(root: &Path, target: &Path, config: &Config) -> Result<Vec<Disco
     let exclude = build_globset(&config.exclude.patterns)?;
     let include_all = config.include.patterns.is_empty();
 
+    if target.is_file() {
+        let absolute_path = target.to_path_buf();
+        let relative_path = normalized_relative_path(root, &absolute_path)?;
+        if exclude.is_match(&relative_path) {
+            return Ok(Vec::new());
+        }
+        return Ok(vec![DiscoveredFile {
+            absolute_path,
+            relative_path,
+        }]);
+    }
+
     let mut files = Vec::new();
     for entry in WalkDir::new(target).into_iter().filter_map(Result::ok) {
         if !entry.file_type().is_file() {
