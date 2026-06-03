@@ -4,7 +4,10 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    cli::{InitArgs, ModelCacheArg, ModelVariantArg, ProviderArg},
+    cli::{
+        InitArgs, ModelCacheArg, ModelVariantArg, ProviderArg, ProviderOverrideArgs,
+        SearchLevelArg, SearchModeArg,
+    },
     db,
     errors::EnfError,
 };
@@ -509,6 +512,28 @@ pub fn normalize_provider_defaults(config: &mut Config) {
     }
 }
 
+pub fn apply_provider_overrides(config: &mut Config, overrides: &ProviderOverrideArgs) {
+    if let Some(provider) = &overrides.provider {
+        config.embedding.provider = provider.clone().into();
+        normalize_provider_defaults(config);
+    }
+    if let Some(model) = &overrides.model {
+        config.embedding.model = model.clone();
+    }
+    if let Some(variant) = &overrides.variant {
+        config.embedding.variant = Some(variant.clone().into());
+    }
+    if let Some(endpoint) = &overrides.endpoint {
+        config.embedding.endpoint = Some(endpoint.clone());
+    }
+    if let Some(api_key_env) = &overrides.api_key_env {
+        config.embedding.api_key_env = Some(api_key_env.clone());
+    }
+    if let Some(dimensions) = overrides.dimensions {
+        config.embedding.dimensions = dimensions;
+    }
+}
+
 fn ensure_gitignore(path: &std::path::Path) -> Result<()> {
     let mut existing = fs::read_to_string(path).unwrap_or_default();
     let mut changed = false;
@@ -566,6 +591,26 @@ impl From<ModelCacheArg> for ModelCache {
         match value {
             ModelCacheArg::Global => ModelCache::Global,
             ModelCacheArg::Project => ModelCache::Project,
+        }
+    }
+}
+
+impl From<SearchModeArg> for SearchMode {
+    fn from(value: SearchModeArg) -> Self {
+        match value {
+            SearchModeArg::Hybrid => SearchMode::Hybrid,
+            SearchModeArg::Vector => SearchMode::Vector,
+            SearchModeArg::Keyword => SearchMode::Keyword,
+        }
+    }
+}
+
+impl From<SearchLevelArg> for SearchLevel {
+    fn from(value: SearchLevelArg) -> Self {
+        match value {
+            SearchLevelArg::Chunk => SearchLevel::Chunk,
+            SearchLevelArg::File => SearchLevel::File,
+            SearchLevelArg::Both => SearchLevel::Both,
         }
     }
 }
