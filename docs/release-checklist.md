@@ -36,9 +36,17 @@ Use this checklist for packaging-ready releases.
 
 - [ ] Build and package:
   - `cargo package`
+- [ ] Build release archives through GitHub Actions tag workflow:
+  - `git tag vX.Y.Z && git push origin vX.Y.Z`
 - [ ] Validate package artifact:
   - Confirm `Cargo.toml` metadata, readme linkage, and included files are correct
   - Run `cargo package --list` and confirm docs and runtime files are present
+- [ ] Validate installer:
+  - `scripts/install.sh` installs a release archive on supported platforms
+  - Cargo fallback works when no release archive is available
+- [ ] Optional Homebrew tap:
+  - Create/update formula from release URL and SHA-256 checksum
+  - Test with `brew install --build-from-source ./Formula/enf.rb`
 - [ ] Final verification:
   - Confirm `enf --help` reflects all documented commands and flags
   - Confirm `enf init --db` + `enf status` end-to-end path still matches docs

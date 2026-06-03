@@ -12,8 +12,35 @@ workflow files.
 - Native provider defaults are `provider = "native"` + `engine = "fastembed"` in
   config, and native fastembed is an available runtime path for embeddings.
 
-Use `cargo install` or `cargo install --path .` from this repo for your preferred
-distribution method.
+## Installation
+
+### From this repo while developing
+
+```sh
+cargo install --path . --locked
+```
+
+### From GitHub releases
+
+After tagged releases are available, the install script downloads prebuilt
+macOS/Linux archives and installs `enf` into `$HOME/.local/bin` by default:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Elephant-Hand-Games/elephant-never-forgets-cli/main/scripts/install.sh | sh
+```
+
+Override install location if needed:
+
+```sh
+ENF_INSTALL_DIR=/usr/local/bin sh scripts/install.sh
+```
+
+If a release archive does not exist for your platform, the script falls back to
+`cargo install --git https://github.com/Elephant-Hand-Games/elephant-never-forgets-cli.git --locked`.
+
+Homebrew support is practical after the first release archive exists. It needs a
+tap formula with the release URL and SHA-256 checksum; the release workflow in
+this repo produces the archives and checksums that formula would use.
 
 ## Command Workflows
 
@@ -137,3 +164,22 @@ For a complete CLI surface reference, see [`docs/command-reference.md`](./docs/c
 ## Release Process
 
 - Run the release checks in [`docs/release-checklist.md`](./docs/release-checklist.md).
+
+## Local Testing Ground
+
+This repo includes a tiny sample project under [`testing-ground/`](./testing-ground/)
+with a couple of directories, Markdown files, and one text file.
+
+After you install `enf`, try:
+
+```sh
+cd /Users/turnercore/Projects/CLI/elephant-never-forgets-cli/testing-ground
+enf init --db --model-cache project
+enf status
+enf index .
+enf search "where are agent rules documented?"
+enf search "strict offline cache" --mode keyword --cached-query-only
+enf retrieve "provider override warning" --json
+enf doctor
+enf ci --no-embed
+```
