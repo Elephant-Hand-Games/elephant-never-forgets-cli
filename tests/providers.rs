@@ -70,6 +70,12 @@ fn build_provider_dispatches_to_the_expected_profiles() {
         http.profile().endpoint.as_deref(),
         Some("https://example.invalid/v1/embeddings")
     );
+
+    let native = build_provider(&base_config(Provider::Native)).unwrap();
+    assert_eq!(native.profile().provider, "native");
+    assert_eq!(native.profile().engine.as_deref(), Some("fastembed"));
+    assert_eq!(native.profile().model, "nomic-embed-text-v1.5");
+    assert_eq!(native.profile().variant.as_deref(), Some("quantized"));
 }
 
 #[test]

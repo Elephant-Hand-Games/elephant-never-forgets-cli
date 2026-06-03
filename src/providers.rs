@@ -1,6 +1,7 @@
 use std::env;
 
 use anyhow::{Context, Result};
+use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
 use reqwest::{
     blocking::Client,
     header::{AUTHORIZATION, CONTENT_TYPE},
@@ -17,12 +18,22 @@ use crate::{
 
 pub fn build_provider(config: &Config) -> Result<Box<dyn EmbeddingProvider + Send>> {
     match config.embedding.provider {
-        Provider::Native => anyhow::bail!("native embedding provider is not implemented here"),
+        Provider::Native => Ok(Box::new(NativeFastEmbedProvider::from_config(config)?)),
         Provider::Ollama => Ok(Box::new(OllamaProvider::from_config(config)?)),
         Provider::Openai => Ok(Box::new(OpenAiProvider::from_config(config)?)),
         Provider::OpenaiCompatible => Ok(Box::new(OpenAiCompatibleProvider::from_config(config)?)),
         Provider::Http => Ok(Box::new(HttpProvider::from_config(config)?)),
     }
+}
+
+pub struct NativeFastEmbedProvider {
+    model: Option<TextEmbedding>,
+    embedding_model: EmbeddingModel,
+    model_name: String,
+    variant: Option<String>,
+    dimensions: usize,
+    document_prefix: String,
+    query_prefix: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -95,6 +106,38 @@ pub struct HttpProvider {
     dimensions: usize,
     document_prefix: String,
     query_prefix: String,
+}
+
+impl NativeFastEmbedProvider {
+    pub fn from_config(config: &Config) -> Result<Self> {
+        let variant = config
+            .embedding
+            .variant
+            .as_ref()
+            .map(|variant| match variant {
+                crate::config::ModelVariant::Quantized => "quantized".to_string(),
+                crate::config::ModelVariant::Full => "full".to_string(),
+            });
+        let embedding_model = native_model_for(&config.embedding.model, variant.as_deref())?;
+        Ok(Self {
+            model: None,
+            embedding_model,
+            model_name: config.embedding.model.clone(),
+            variant,
+            dimensions: config.embedding.dimensions,
+            document_prefix: config.embedding.document_prefix.clone(),
+            query_prefix: config.embedding.query_prefix.clone(),
+        })
+    }
+
+    fn model(&mut self) -> Result<&mut TextEmbedding> {
+        if self.model.is_none() {
+            self.model = Some(TextEmbedding::try_new(InitOptions::new(
+                self.embedding_model.clone(),
+            ))?);
+        }
+        Ok(self.model.as_mut().expect("model was initialized"))
+    }
 }
 
 impl OllamaProvider {
@@ -298,6 +341,51 @@ impl HttpProvider {
             );
         }
         Ok(embeddings)
+    }
+}
+
+impl EmbeddingProvider for NativeFastEmbedProvider {
+    fn profile(&self) -> EmbeddingProfile {
+        let mut profile = EmbeddingProfile {
+            profile_hash: String::new(),
+            provider: "native".into(),
+            engine: Some("fastembed".into()),
+            model: self.model_name.clone(),
+            variant: self.variant.clone(),
+            endpoint: None,
+            dimensions: self.dimensions,
+            document_prefix: self.document_prefix.clone(),
+            query_prefix: self.query_prefix.clone(),
+            normalizer_version: NORMALIZER_VERSION.into(),
+            chunker_version: CHUNKER_VERSION.into(),
+            serialization_version: EMBEDDING_SERIALIZATION_VERSION.into(),
+        };
+        profile.profile_hash = profile_hash(&profile);
+        profile
+    }
+
+    fn ensure_ready(&mut self) -> Result<()> {
+        let _ = self.model()?;
+        Ok(())
+    }
+
+    fn embed_documents(&mut self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
+        if texts.is_empty() {
+            return Ok(Vec::new());
+        }
+        let prefixed = texts
+            .iter()
+            .map(|text| format!("{}{}", self.document_prefix, text))
+            .collect::<Vec<_>>();
+        self.model()?.embed(prefixed, None).map_err(Into::into)
+    }
+
+    fn embed_query(&mut self, query: &str) -> Result<Vec<f32>> {
+        let prefixed = format!("{}{}", self.query_prefix, query);
+        let mut embeddings = self.model()?.embed(vec![prefixed], None)?;
+        embeddings
+            .pop()
+            .context("native fastembed returned no query embedding")
     }
 }
 
@@ -573,4 +661,15 @@ fn bearer_token(env_name: &str) -> Result<String> {
     let value = env::var(env_name)
         .with_context(|| format!("missing API key environment variable {}", env_name))?;
     Ok(format!("Bearer {}", value))
+}
+
+fn native_model_for(model: &str, variant: Option<&str>) -> Result<EmbeddingModel> {
+    match (model, variant.unwrap_or("quantized")) {
+        ("nomic-embed-text-v1.5", "quantized") => Ok(EmbeddingModel::NomicEmbedTextV15Q),
+        ("nomic-embed-text-v1.5", "full") => Ok(EmbeddingModel::NomicEmbedTextV15),
+        _ => anyhow::bail!(
+            "unsupported native fastembed model profile: model={model}, variant={}",
+            variant.unwrap_or("none")
+        ),
+    }
 }
