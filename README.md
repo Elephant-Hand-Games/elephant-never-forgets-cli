@@ -176,6 +176,17 @@ global` uses the environment cache directory.
 - Crate/package: `elephant-never-forgets`
 - Executable command: `enf`
 
+## Agent Skill
+
+Agents can install the bundled Codex skill for working with this CLI:
+
+```sh
+/skills install https://github.com/Elephant-Hand-Games/elephant-never-forgets-cli/tree/main/skills/elephant-never-forgets --now
+```
+
+Use the skill when an agent needs to install, initialize, index, search, debug,
+or release-test `enf`.
+
 ## Default Stack
 
 - Rust CLI

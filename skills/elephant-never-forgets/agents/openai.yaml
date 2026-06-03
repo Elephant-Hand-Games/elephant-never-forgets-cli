@@ -1,0 +1,4 @@
+interface:
+  display_name: "Elephant Never Forgets"
+  short_description: "Work with the enf semantic search CLI"
+  default_prompt: "Use $elephant-never-forgets to install, initialize, index, search, or debug an Elephant Never Forgets CLI project."
