@@ -20,13 +20,14 @@ Commands:
 - `status`
 - `doctor`
 - `ci`
+- `update`
 
 ## `init`
 
 Initialize project state and write `.enf.toml`.
 
 ```text
-enf init [--db[=<sqlite|false>]] [--native-embed|--local-embed] [--provider <provider>] [--model <model>] [--variant <variant>] [--endpoint <url>] [--api-key-env <env-var>] [--dimensions <usize>] [--model-cache <scope>] [--install-models] [--index] [--force]
+enf init [--db[=<sqlite|false>]] [--native-embed|--local-embed] [--provider <provider>] [--model <model>] [--variant <variant>] [--endpoint <url>] [--api-key-env <env-var>] [--dimensions <usize>] [--model-cache <scope>] [--install-models] [--index] [--force] [--dry-run]
 ```
 
 Flags:
@@ -50,6 +51,7 @@ Flags:
 - `--install-models`
 - `--index`
 - `--force`
+- `--dry-run`
 
 Plain `enf init` creates the default native SQLite project:
 
@@ -80,7 +82,7 @@ Subcommands:
   ```
 - `install`:
   ```text
-  enf models install [model] [--variant <variant>] [--json]
+  enf models install [model] [--variant <variant>] [--json] [--dry-run]
   ```
   - `model` positional argument is optional
   - Captures the active profile hash and cache marker state for the resolved cache scope.
@@ -90,7 +92,7 @@ Subcommands:
   ```
 - `gc`:
   ```text
-  enf models gc [--json]
+  enf models gc [--json] [--dry-run]
   ```
 
 ## `index`
@@ -98,7 +100,7 @@ Subcommands:
 Index files into the local SQLite database.
 
 ```text
-enf index [path] [--reembed] [--changed-only] [--install-models] [--no-embed] [--provider <provider>] [--model <model>] [--variant <variant>] [--endpoint <url>] [--api-key-env <env-var>] [--dimensions <usize>] [--json]
+enf index [path] [--reembed] [--changed-only] [--install-models] [--no-embed] [--provider <provider>] [--model <model>] [--variant <variant>] [--endpoint <url>] [--api-key-env <env-var>] [--dimensions <usize>] [--json] [--dry-run]
 ```
 
 Flags:
@@ -109,6 +111,7 @@ Flags:
 - `--install-models`
 - `--no-embed`
 - `--json`
+- `--dry-run`
 - Provider overrides:
   - `--provider <provider>`
   - `--model <string>`
@@ -141,8 +144,10 @@ as `.ehmeta`.
 Remove an indexed file path from SQLite without deleting it from disk.
 
 ```text
-enf remove <path>
+enf remove <path> [--dry-run]
 ```
+
+- `--dry-run`
 
 ## `search`
 
@@ -201,9 +206,26 @@ enf doctor [--json]
 ## `ci`
 
 ```text
-enf ci [--no-embed] [--install-models] [--json]
+enf ci [--no-embed] [--install-models] [--json] [--dry-run]
 ```
 
 - `--no-embed`
 - `--install-models`
 - `--json`
+- `--dry-run`
+
+## `update`
+
+Update the installed `enf` executable using the release installer.
+
+```text
+enf update [--version <tag>] [--install-dir <path>] [--method <binary|cargo>] [--repo <owner/name>] [--dry-run]
+```
+
+Flags:
+
+- `--version <tag>`
+- `--install-dir <path>`
+- `--method <binary|cargo>`
+- `--repo <owner/name>`
+- `--dry-run`

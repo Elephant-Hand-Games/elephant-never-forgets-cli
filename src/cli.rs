@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
-use crate::{config, index, models, output, search};
+use crate::{config, index, models, output, search, update};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -28,6 +28,7 @@ pub enum Command {
     Status(StatusArgs),
     Doctor(DoctorArgs),
     Ci(CiArgs),
+    Update(UpdateArgs),
 }
 
 #[derive(Debug, Args)]
@@ -58,6 +59,8 @@ pub struct InitArgs {
     pub index: bool,
     #[arg(long)]
     pub force: bool,
+    #[arg(long)]
+    pub dry_run: bool,
 }
 
 #[derive(Debug, Args)]
@@ -72,7 +75,7 @@ pub enum ModelsCommand {
     Current(JsonArgs),
     Install(ModelInstallArgs),
     CachePath(JsonArgs),
-    Gc(JsonArgs),
+    Gc(ModelGcArgs),
 }
 
 #[derive(Debug, Args)]
@@ -82,6 +85,16 @@ pub struct ModelInstallArgs {
     pub variant: Option<ModelVariantArg>,
     #[arg(long)]
     pub json: bool,
+    #[arg(long)]
+    pub dry_run: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct ModelGcArgs {
+    #[arg(long)]
+    pub json: bool,
+    #[arg(long)]
+    pub dry_run: bool,
 }
 
 #[derive(Debug, Args)]
@@ -100,11 +113,15 @@ pub struct IndexArgs {
     pub provider: ProviderOverrideArgs,
     #[arg(long)]
     pub json: bool,
+    #[arg(long)]
+    pub dry_run: bool,
 }
 
 #[derive(Debug, Args)]
 pub struct RemoveArgs {
     pub path: PathBuf,
+    #[arg(long)]
+    pub dry_run: bool,
 }
 
 #[derive(Debug, Args, Clone)]
@@ -144,6 +161,22 @@ pub struct CiArgs {
     pub install_models: bool,
     #[arg(long)]
     pub json: bool,
+    #[arg(long)]
+    pub dry_run: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct UpdateArgs {
+    #[arg(long)]
+    pub version: Option<String>,
+    #[arg(long)]
+    pub install_dir: Option<String>,
+    #[arg(long)]
+    pub method: Option<String>,
+    #[arg(long)]
+    pub repo: Option<String>,
+    #[arg(long)]
+    pub dry_run: bool,
 }
 
 #[derive(Debug, Args, Clone)]
@@ -222,5 +255,6 @@ pub fn run() -> anyhow::Result<()> {
         Command::Status(args) => output::status(args),
         Command::Doctor(args) => output::doctor(args),
         Command::Ci(args) => output::ci(args),
+        Command::Update(args) => update::run(args),
     }
 }

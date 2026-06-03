@@ -45,6 +45,9 @@ pub fn run(args: ModelsArgs) -> Result<()> {
             if let Some(variant) = install.variant {
                 install_config.embedding.variant = Some(variant.into());
             }
+            if install.dry_run {
+                return print_model_install_dry_run(&install_config, install.json);
+            }
             install_active_model(&install_config)?;
             print_model_status(&install_config, install.json)
         }
@@ -59,13 +62,54 @@ pub fn run(args: ModelsArgs) -> Result<()> {
         }
         ModelsCommand::Gc(json) => {
             if json.json {
-                println!("{}", serde_json::json!({"removed": 0}));
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "removed": 0,
+                        "dry_run": json.dry_run,
+                    })
+                );
+            } else if json.dry_run {
+                println!("Dry run: no cached models would be removed");
             } else {
                 println!("No cached models removed");
             }
             Ok(())
         }
     }
+}
+
+fn print_model_install_dry_run(config: &Config, json: bool) -> Result<()> {
+    let profile = active_profile(config);
+    let model_cache_path = cache_path(config)?;
+    let marker_path = active_model_marker_path(&profile, &model_cache_path);
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "dry_run": true,
+                "profile_hash": profile.profile_hash,
+                "provider": profile.provider,
+                "model": profile.model,
+                "variant": profile.variant,
+                "dimensions": profile.dimensions,
+                "cache_path": model_cache_path,
+                "marker_path": marker_path,
+            }))?
+        );
+    } else {
+        println!("Dry run: would install active embedding profile");
+        println!("  profile: {}", profile.profile_hash);
+        println!("  provider: {}", profile.provider);
+        println!("  model: {}", profile.model);
+        if let Some(variant) = profile.variant {
+            println!("  variant: {variant}");
+        }
+        println!("  dims: {}", profile.dimensions);
+        println!("  cache: {}", model_cache_path.display());
+        println!("  marker: {}", marker_path.display());
+    }
+    Ok(())
 }
 
 pub fn install_active_model(config: &Config) -> Result<()> {

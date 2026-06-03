@@ -28,7 +28,7 @@ run the `export PATH=...` command printed by the installer.
 Install a specific release tag:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Elephant-Hand-Games/elephant-never-forgets-cli/main/scripts/install.sh | ENF_VERSION=v1.2.3 sh
+curl -fsSL https://raw.githubusercontent.com/Elephant-Hand-Games/elephant-never-forgets-cli/main/scripts/install.sh | ENF_VERSION=v1.2.4 sh
 ```
 
 Install somewhere else:
@@ -63,6 +63,18 @@ Homebrew support is practical now that release archives exist. It needs a tap
 formula with the release URL and SHA-256 checksum; the release workflow in this
 repo produces the archives and checksums that formula would use.
 
+Update an existing install:
+
+```sh
+enf update
+```
+
+Preview an update without installing anything:
+
+```sh
+enf update --dry-run
+```
+
 ## Command Workflows
 
 ### Install
@@ -71,6 +83,7 @@ repo produces the archives and checksums that formula would use.
 enf init
 enf init --db=sqlite
 enf init --db=false
+enf init --dry-run
 enf init --db --provider openai --model text-embedding-3-small --index
 enf init --db --provider ollama --model nomic-embed-text
 enf init --db --force --provider native
@@ -92,6 +105,7 @@ write/refresh config without creating the database.
 enf models list
 enf models current --json
 enf models install
+enf models install --dry-run
 enf models cache-path
 enf models gc
 ```
@@ -102,6 +116,7 @@ enf models gc
 enf index .
 enf add ./file.ehmeta
 enf remove ./old-note.md
+enf index . --dry-run
 enf index ./docs --reembed --json
 enf index ./notes --changed-only
 enf index --no-embed ./docs

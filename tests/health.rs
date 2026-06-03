@@ -87,6 +87,25 @@ fn ci_no_embed_checks_config_and_database_only() {
 }
 
 #[test]
+fn ci_dry_run_reports_planned_checks_without_running_repairs() {
+    let temp = setup_project();
+
+    let output = enf()
+        .current_dir(temp.path())
+        .args(["ci", "--install-models", "--dry-run", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: Value = serde_json::from_slice(&output).unwrap();
+
+    assert_eq!(json["dry_run"], true);
+    assert_eq!(json["would_install_models"], true);
+    assert_eq!(json["install_models"], true);
+}
+
+#[test]
 fn ci_fails_when_embeddings_are_required_but_missing() {
     let temp = setup_project();
 

@@ -228,6 +228,24 @@ pub fn init(args: InitArgs) -> Result<()> {
         anyhow::bail!("--index requires database initialization; use `enf init --index` or run `enf index .` later");
     }
 
+    if args.dry_run {
+        println!("Dry run: would initialize Elephant Never Forgets project");
+        println!("  config: {}", CONFIG_FILE);
+        if db_enabled {
+            println!("  database: {}", config.state.db_path);
+        } else {
+            println!("  database: existing database required, creation skipped");
+        }
+        println!("  provider: {}", config.embedding.provider.as_str());
+        if args.install_models || config.embedding.provider == Provider::Native {
+            println!("  model action: install active model profile");
+        }
+        if args.index {
+            println!("  index action: index current directory");
+        }
+        return Ok(());
+    }
+
     fs::create_dir_all(cwd.join(STATE_DIR)).context("creating .enf directory")?;
     fs::create_dir_all(cwd.join(CACHE_DIR)).context("creating .enf/cache directory")?;
     write_config(&config_path, &config)?;

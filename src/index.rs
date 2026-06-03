@@ -21,6 +21,9 @@ pub fn run(args: IndexArgs) -> Result<()> {
     crate::config::apply_provider_overrides(&mut config, &args.provider);
     crate::config::validate(&config)?;
     let cwd = std::env::current_dir()?;
+    if args.dry_run {
+        return dry_run_index(&cwd, &args, &config);
+    }
     let summary = index_path_with_options(
         &cwd,
         args.path,
@@ -46,6 +49,11 @@ pub fn run_add(args: IndexArgs) -> Result<()> {
 pub fn run_remove(args: RemoveArgs) -> Result<()> {
     let config = crate::config::load()?;
     let cwd = std::env::current_dir()?;
+    if args.dry_run {
+        let normalized = normalize_index_path(&cwd, &args.path)?;
+        println!("Dry run: would remove {normalized} from index");
+        return Ok(());
+    }
     remove_indexed_path(&cwd, args.path, &config)
 }
 
@@ -79,6 +87,45 @@ pub struct IndexSummary {
     pub reembedded: bool,
     pub changed_only: bool,
     pub no_embed: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct IndexDryRunSummary {
+    path: String,
+    discovered_files: usize,
+    provider: String,
+    would_embed: bool,
+    would_install_models: bool,
+    reembed: bool,
+    changed_only: bool,
+    no_embed: bool,
+}
+
+fn dry_run_index(root: &Path, args: &IndexArgs, config: &Config) -> Result<()> {
+    let target = root.join(&args.path);
+    let discovered = discovery::discover(root, &target, config)?;
+    let summary = IndexDryRunSummary {
+        path: display_index_path(&args.path),
+        discovered_files: discovered.len(),
+        provider: config.embedding.provider.as_str().to_string(),
+        would_embed: !args.no_embed,
+        would_install_models: args.install_models,
+        reembed: args.reembed,
+        changed_only: args.changed_only,
+        no_embed: args.no_embed,
+    };
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&summary)?);
+    } else {
+        println!("Dry run: would index {}", summary.path);
+        println!("  discovered files: {}", summary.discovered_files);
+        println!("  provider: {}", summary.provider);
+        println!("  would embed: {}", summary.would_embed);
+        println!("  would install models: {}", summary.would_install_models);
+        println!("  reembed: {}", summary.reembed);
+        println!("  changed only: {}", summary.changed_only);
+    }
+    Ok(())
 }
 
 pub fn index_path(

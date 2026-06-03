@@ -118,6 +118,26 @@ pub fn ci(args: CiArgs) -> Result<()> {
     let config = crate::config::load()?;
     crate::config::validate(&config)?;
     let cwd = std::env::current_dir()?;
+    if args.dry_run {
+        if args.json {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "dry_run": true,
+                    "no_embed": args.no_embed,
+                    "install_models": args.install_models,
+                    "would_install_models": args.install_models,
+                    "db_path": cwd.join(&config.state.db_path),
+                }))?
+            );
+        } else {
+            println!("Dry run: would run ENF CI checks");
+            println!("  no embed: {}", args.no_embed);
+            println!("  would install models: {}", args.install_models);
+            println!("  database: {}", cwd.join(&config.state.db_path).display());
+        }
+        return Ok(());
+    }
     if args.install_models {
         crate::models::install_active_model_in(&config, &cwd, dirs::cache_dir().as_deref())?;
     }
