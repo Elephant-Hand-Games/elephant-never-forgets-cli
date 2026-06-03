@@ -14,6 +14,7 @@ struct StatusReport {
     db_path: String,
     active_profile: EmbeddingProfile,
     model_installed: bool,
+    native_runtime_available: Option<bool>,
     counts: IndexCounts,
     indexed_profiles: Vec<IndexedProfile>,
 }
@@ -72,6 +73,9 @@ pub fn status(args: StatusArgs) -> Result<()> {
         println!("  model: {}", report.active_profile.model);
         println!("  profile: {}", report.active_profile.profile_hash);
         println!("  model installed: {}", report.model_installed);
+        if let Some(native_runtime_available) = report.native_runtime_available {
+            println!("  native runtime available: {}", native_runtime_available);
+        }
         println!("  files: {}", report.counts.files);
         println!("  chunks: {}", report.counts.chunks);
         println!(
@@ -157,6 +161,8 @@ fn status_report(config: &Config, conn: &Connection) -> Result<StatusReport> {
         db_path: config.state.db_path.clone(),
         active_profile,
         model_installed: crate::models::is_active_model_installed(config)?,
+        native_runtime_available: (config.embedding.provider == Provider::Native)
+            .then(native_fastembed_available),
         counts: index_counts(config, conn)?,
         indexed_profiles: indexed_profiles(conn)?,
     })
@@ -195,6 +201,12 @@ fn doctor_report(config: &Config, conn: &Connection) -> Result<DoctorReport> {
 fn provider_check(config: &Config, model_installed: bool) -> Check {
     match config.embedding.provider {
         Provider::Native => {
+            if !native_fastembed_available() {
+                return Check::warn(
+                    "native fastembed runtime is not included in this portable build",
+                    "enf init --provider ollama --model nomic-embed-text --force",
+                );
+            }
             if model_installed {
                 Check::ok("native provider is ready from installed model marker")
             } else {
@@ -208,6 +220,10 @@ fn provider_check(config: &Config, model_installed: bool) -> Check {
             Err(err) => Check::warn(format!("provider is not ready: {err}"), "enf doctor"),
         },
     }
+}
+
+fn native_fastembed_available() -> bool {
+    cfg!(feature = "native-fastembed")
 }
 
 fn index_counts(config: &Config, conn: &Connection) -> Result<IndexCounts> {

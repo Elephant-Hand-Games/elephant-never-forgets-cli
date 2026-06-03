@@ -28,7 +28,7 @@ run the `export PATH=...` command printed by the installer.
 Install a specific release tag:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Elephant-Hand-Games/elephant-never-forgets-cli/main/scripts/install.sh | ENF_VERSION=v1.1.0 sh
+curl -fsSL https://raw.githubusercontent.com/Elephant-Hand-Games/elephant-never-forgets-cli/main/scripts/install.sh | ENF_VERSION=v1.1.1 sh
 ```
 
 Install somewhere else:
@@ -42,6 +42,18 @@ Published binary targets:
 - `aarch64-apple-darwin` for Apple Silicon Macs
 - `x86_64-unknown-linux-gnu` for Linux x64, including Debian x64
 - `x86_64-pc-windows-msvc` for Windows x64
+
+The Linux x64 release binary is built as a portable CLI binary so commands like
+`enf`, `enf --help`, `enf init`, and remote-provider workflows start on older
+or more conservative Debian-class CPUs. Native fastembed is available on Linux
+when installing from source with default features on a supported CPU:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Elephant-Hand-Games/elephant-never-forgets-cli/main/scripts/install.sh | ENF_INSTALL_METHOD=cargo sh
+```
+
+Use Ollama, OpenAI, OpenAI-compatible, or HTTP providers with the portable
+release binary.
 
 If no release archive exists for your platform, the installer falls back to
 installing from the Git repo with Cargo:
@@ -69,6 +81,7 @@ enf init
 enf init --db=sqlite
 enf init --db=false
 enf init --db --provider openai --model text-embedding-3-small --index
+enf init --db --provider ollama --model nomic-embed-text
 enf init --db --force --provider native
 ```
 
@@ -81,6 +94,16 @@ enf init --db=sqlite --provider native --model nomic-embed-text-v1.5 --variant q
 Native projects install the active model profile during initialization. Use
 `--db=false` only when `.enf/index.sqlite` already exists and you want init to
 write/refresh config without creating the database.
+
+On Linux, the published x64 binary is currently portable-first and does not link
+the native fastembed runtime. For Debian release installs, initialize with
+Ollama or another remote provider, or build from source with default features
+when you want local native embeddings:
+
+```sh
+enf init --db --provider ollama --model nomic-embed-text
+curl -fsSL https://raw.githubusercontent.com/Elephant-Hand-Games/elephant-never-forgets-cli/main/scripts/install.sh | ENF_INSTALL_METHOD=cargo sh
+```
 
 ### Model
 
@@ -197,6 +220,9 @@ custom HTTP embedding endpoints.
 - `enf models install` currently prepares and records the active model profile,
   then writes/updates the cache marker under the resolved model cache path.
 - `enf index <path>` embeds missing chunks for the active profile.
+- Published Linux x64 release binaries are portable builds and return a clear
+  error if the native fastembed provider is used; build from source with default
+  features for native Linux embeddings on supported CPUs.
 - `enf index --no-embed <path>` skips embedding and is intended only for
   metadata-only workflows.
 - `enf search` and `enf retrieve` combine keyword matches with stored chunk vectors

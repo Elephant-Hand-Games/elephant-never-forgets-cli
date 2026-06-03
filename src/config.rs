@@ -244,7 +244,14 @@ pub fn init(args: InitArgs) -> Result<()> {
     }
 
     if args.install_models || config.embedding.provider == Provider::Native {
-        println!("==> Installing native embedding model");
+        if config.embedding.provider == Provider::Native && !native_fastembed_available() {
+            println!("==> Recording native embedding profile");
+            eprintln!(
+                "warning: this portable build does not include native fastembed; use an Ollama/OpenAI/HTTP provider or build from source with native fastembed enabled before indexing"
+            );
+        } else {
+            println!("==> Installing native embedding model");
+        }
         crate::models::install_active_model(&config)?;
     }
 
@@ -269,6 +276,10 @@ pub fn init(args: InitArgs) -> Result<()> {
     }
     println!("✓ Provider: {}", config.embedding.provider.as_str());
     Ok(())
+}
+
+fn native_fastembed_available() -> bool {
+    cfg!(feature = "native-fastembed")
 }
 
 pub fn init_config(args: &InitArgs) -> Config {

@@ -1,6 +1,6 @@
 [package]
 name = "elephant-never-forgets"
-version = "1.1.0"
+version = "1.1.1"
 edition = "2021"
 rust-version = "1.80"
 description = "Native-first CLI semantic search for directories, repos, docs, and agent workflows."
@@ -14,6 +14,10 @@ categories = ["command-line-utilities", "text-processing"]
 name = "enf"
 path = "src/main.rs"
 
+[features]
+default = ["native-fastembed"]
+native-fastembed = ["dep:fastembed"]
+
 [dependencies]
 anyhow = "1.0"
 async-trait = "0.1"
@@ -21,7 +25,7 @@ blake3 = "1.5"
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
 clap = { version = "4.5", features = ["derive", "env"] }
 dirs = "5.0"
-fastembed = "5.15"
+fastembed = { version = "5.15", optional = true }
 globset = "0.4"
 ignore = "0.4"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "blocking"] }

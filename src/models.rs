@@ -6,10 +6,9 @@ use serde::Serialize;
 
 use crate::{
     cli::{ModelsArgs, ModelsCommand},
-    config::{Config, ModelCache, Provider},
+    config::{Config, ModelCache},
     db,
     embed::{active_profile, EmbeddingProfile},
-    providers,
 };
 
 #[derive(Debug, Serialize)]
@@ -104,11 +103,6 @@ pub fn install_active_model_in(
     let profile = active_profile(config);
     let path = cache_path_for(config, cwd, global_cache_dir);
     std::fs::create_dir_all(&path)?;
-
-    if config.embedding.provider == Provider::Native {
-        let mut provider = providers::build_provider(config)?;
-        provider.ensure_ready()?;
-    }
 
     let marker = InstalledModelMarker {
         status: "installed",

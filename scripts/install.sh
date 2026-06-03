@@ -4,6 +4,7 @@ set -eu
 REPO="${ENF_REPO:-Elephant-Hand-Games/elephant-never-forgets-cli}"
 VERSION="${ENF_VERSION:-latest}"
 INSTALL_DIR="${ENF_INSTALL_DIR:-$HOME/.enf/bin}"
+INSTALL_METHOD="${ENF_INSTALL_METHOD:-binary}"
 
 detect_target() {
   os="$(uname -s | tr '[:upper:]' '[:lower:]')"
@@ -57,11 +58,22 @@ download() {
 
 install_from_cargo() {
   need cargo
+  cargo_root="$tmpdir/cargo-root"
+  cargo_home="$tmpdir/cargo-home"
   if [ -f Cargo.toml ] && grep -q '^name = "elephant-never-forgets"' Cargo.toml; then
-    cargo install --path . --locked
+    CARGO_HOME="$cargo_home" cargo install --path . --locked --root "$cargo_root"
   else
-    cargo install --git "https://github.com/$REPO.git" --locked
+    if [ "$VERSION" = "latest" ]; then
+      CARGO_HOME="$cargo_home" cargo install --git "https://github.com/$REPO.git" --locked --root "$cargo_root"
+    else
+      CARGO_HOME="$cargo_home" cargo install --git "https://github.com/$REPO.git" --tag "$VERSION" --locked --root "$cargo_root"
+    fi
   fi
+  mkdir -p "$INSTALL_DIR"
+  cp "$cargo_root/bin/enf" "$INSTALL_DIR/enf"
+  chmod 755 "$INSTALL_DIR/enf"
+  echo "installed enf to $INSTALL_DIR/enf from source"
+  ensure_on_path
 }
 
 shell_profile() {
@@ -109,6 +121,18 @@ case "$target" in
 esac
 tmpdir="$(mktemp -d)"
 trap 'rm -rf "$tmpdir"' EXIT
+
+case "$INSTALL_METHOD" in
+  binary) ;;
+  cargo|source)
+    install_from_cargo
+    exit 0
+    ;;
+  *)
+    echo "unsupported ENF_INSTALL_METHOD: $INSTALL_METHOD (use binary or cargo)" >&2
+    exit 1
+    ;;
+esac
 
 if [ "$VERSION" = "latest" ]; then
   url="https://github.com/$REPO/releases/latest/download/$archive"

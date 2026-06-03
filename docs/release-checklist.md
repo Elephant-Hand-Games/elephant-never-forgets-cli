@@ -20,6 +20,8 @@ Use this checklist for packaging-ready releases.
 
 - [ ] Core test suite:
   - `cargo test --all`
+- [ ] Portable Linux profile:
+  - `cargo check --no-default-features`
 - [ ] Provider mock tests:
   - Add/refresh mock coverage for provider selection and override precedence
     (`native`, `ollama`, `openai`, `openai-compatible`, `http`)
@@ -51,6 +53,8 @@ Use this checklist for packaging-ready releases.
 - [ ] Final verification:
   - Confirm `enf --help` reflects all documented commands and flags
   - Confirm `enf init --db` + `enf status` end-to-end path still matches docs
+  - Confirm the Linux x64 release asset is built with the portable feature set
+    and starts on Debian-class x64 machines.
 
 ## Embedding pipeline release checks
 
