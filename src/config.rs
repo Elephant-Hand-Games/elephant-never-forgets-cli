@@ -214,8 +214,8 @@ pub fn init(args: InitArgs) -> Result<()> {
         .into());
     }
 
-    let mut config = Config::default();
-    apply_init_overrides(&mut config, &args);
+    let config = init_config(&args);
+    validate(&config)?;
 
     fs::create_dir_all(cwd.join(STATE_DIR)).context("creating .enf directory")?;
     fs::create_dir_all(cwd.join(CACHE_DIR)).context("creating .enf/cache directory")?;
@@ -236,6 +236,12 @@ pub fn init(args: InitArgs) -> Result<()> {
     println!("  database: {}", config.state.db_path);
     println!("  provider: {}", config.embedding.provider.as_str());
     Ok(())
+}
+
+pub fn init_config(args: &InitArgs) -> Config {
+    let mut config = Config::default();
+    apply_init_overrides(&mut config, args);
+    config
 }
 
 pub fn load() -> Result<Config> {
@@ -259,16 +265,183 @@ pub fn validate(config: &Config) -> Result<()> {
     if config.version != 1 {
         anyhow::bail!("unsupported config version {}", config.version);
     }
-    if config.embedding.dimensions == 0 {
-        anyhow::bail!("embedding.dimensions must be greater than 0");
-    }
+    validate_state(config)?;
+    validate_search(config)?;
+    validate_index(config)?;
+    validate_embedding(config)?;
+    Ok(())
+}
+
+fn validate_state(config: &Config) -> Result<()> {
+    validate_non_empty_path(
+        "state.db_path",
+        &config.state.db_path,
+        "use the default .enf/index.sqlite or another project-relative SQLite path",
+    )?;
+    validate_non_empty_path(
+        "state.cache_dir",
+        &config.state.cache_dir,
+        "use the default .enf/cache or another project-relative cache directory",
+    )?;
+    Ok(())
+}
+
+fn validate_search(config: &Config) -> Result<()> {
+    validate_non_negative_weight("search.vector_weight", config.search.vector_weight)?;
+    validate_non_negative_weight("search.keyword_weight", config.search.keyword_weight)?;
+    validate_non_negative_weight("search.metadata_weight", config.search.metadata_weight)?;
     let total_weight =
         config.search.vector_weight + config.search.keyword_weight + config.search.metadata_weight;
     if total_weight <= 0.0 {
-        anyhow::bail!("search weights must sum to a positive value");
+        anyhow::bail!(
+            "search.vector_weight + search.keyword_weight + search.metadata_weight must be greater than 0.0"
+        );
+    }
+    if config.search.limit == 0 {
+        anyhow::bail!("search.limit must be greater than 0");
+    }
+    if config.search.batch_scan_size == 0 {
+        anyhow::bail!("search.batch_scan_size must be greater than 0");
+    }
+    if config.search.max_chunks_per_file == 0 {
+        anyhow::bail!("search.max_chunks_per_file must be greater than 0");
+    }
+    if config.search.snippet_chars == 0 {
+        anyhow::bail!("search.snippet_chars must be greater than 0");
+    }
+    Ok(())
+}
+
+fn validate_index(config: &Config) -> Result<()> {
+    if config.index.chunk_target_tokens == 0 {
+        anyhow::bail!("index.chunk_target_tokens must be greater than 0");
+    }
+    if config.index.chunk_max_tokens == 0 {
+        anyhow::bail!("index.chunk_max_tokens must be greater than 0");
     }
     if config.index.chunk_overlap_tokens >= config.index.chunk_max_tokens {
         anyhow::bail!("index.chunk_overlap_tokens must be less than index.chunk_max_tokens");
+    }
+    if config.index.min_chunk_chars == 0 {
+        anyhow::bail!("index.min_chunk_chars must be greater than 0");
+    }
+    Ok(())
+}
+
+fn validate_embedding(config: &Config) -> Result<()> {
+    validate_non_empty_path(
+        "embedding.model",
+        &config.embedding.model,
+        "choose a model name for the selected provider",
+    )?;
+    if config.embedding.dimensions == 0 {
+        anyhow::bail!("embedding.dimensions must be greater than 0");
+    }
+
+    match config.embedding.provider {
+        Provider::Native => {
+            if config.embedding.engine.as_deref() != Some("fastembed") {
+                anyhow::bail!(
+                    "embedding.engine must be \"fastembed\" when embedding.provider = \"native\""
+                );
+            }
+            if config.embedding.endpoint.is_some() {
+                anyhow::bail!(
+                    "embedding.endpoint must be omitted when embedding.provider = \"native\""
+                );
+            }
+            if config.embedding.api_key_env.is_some() {
+                anyhow::bail!(
+                    "embedding.api_key_env must be omitted when embedding.provider = \"native\""
+                );
+            }
+            if config.embedding.variant.is_none() {
+                anyhow::bail!(
+                    "embedding.variant is required when embedding.provider = \"native\"; use \"quantized\" or \"full\""
+                );
+            }
+        }
+        Provider::Ollama => {
+            if config.embedding.engine.is_some() {
+                anyhow::bail!(
+                    "embedding.engine must be omitted when embedding.provider = \"ollama\""
+                );
+            }
+            if config
+                .embedding
+                .endpoint
+                .as_deref()
+                .map(str::trim)
+                .filter(|endpoint| !endpoint.is_empty())
+                .is_none()
+            {
+                anyhow::bail!(
+                    "embedding.endpoint is required when embedding.provider = \"ollama\"; use the Ollama embeddings URL"
+                );
+            }
+            if config.embedding.api_key_env.is_some() {
+                anyhow::bail!(
+                    "embedding.api_key_env must be omitted when embedding.provider = \"ollama\""
+                );
+            }
+            if config.embedding.variant.is_some() {
+                anyhow::bail!(
+                    "embedding.variant must be omitted when embedding.provider = \"ollama\""
+                );
+            }
+        }
+        Provider::Openai => {
+            if config.embedding.engine.is_some() {
+                anyhow::bail!(
+                    "embedding.engine must be omitted when embedding.provider = \"openai\""
+                );
+            }
+            if config
+                .embedding
+                .endpoint
+                .as_deref()
+                .map(str::trim)
+                .filter(|endpoint| !endpoint.is_empty())
+                .is_none()
+            {
+                anyhow::bail!(
+                    "embedding.endpoint is required when embedding.provider = \"openai\"; use https://api.openai.com/v1/embeddings"
+                );
+            }
+            if config
+                .embedding
+                .api_key_env
+                .as_deref()
+                .map(str::trim)
+                .filter(|env| !env.is_empty())
+                .is_none()
+            {
+                anyhow::bail!(
+                    "embedding.api_key_env is required when embedding.provider = \"openai\"; use OPENAI_API_KEY"
+                );
+            }
+            if config.embedding.variant.is_some() {
+                anyhow::bail!(
+                    "embedding.variant must be omitted when embedding.provider = \"openai\""
+                );
+            }
+        }
+        Provider::OpenaiCompatible | Provider::Http => {}
+    }
+
+    Ok(())
+}
+
+fn validate_non_empty_path(field: &str, value: &str, hint: &str) -> Result<()> {
+    if value.trim().is_empty() {
+        anyhow::bail!("{} must not be empty; {}", field, hint);
+    }
+    Ok(())
+}
+
+fn validate_non_negative_weight(field: &str, value: f32) -> Result<()> {
+    if value < 0.0 {
+        anyhow::bail!("{} must be greater than or equal to 0.0", field);
     }
     Ok(())
 }

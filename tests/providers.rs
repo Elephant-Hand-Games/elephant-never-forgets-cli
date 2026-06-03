@@ -10,6 +10,7 @@ use serde_json::json;
 fn base_config(provider: Provider) -> Config {
     let mut config = Config::default();
     config.embedding.provider = provider;
+    config::normalize_provider_defaults(&mut config);
     config.embedding.model = match config.embedding.provider {
         Provider::Ollama => "nomic-embed-text".into(),
         Provider::Openai => "text-embedding-3-small".into(),
