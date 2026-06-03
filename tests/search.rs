@@ -46,7 +46,9 @@ fn load_config(root: &std::path::Path) -> elephant_never_forgets::config::Config
 }
 
 fn seed_agent_vector(root: &std::path::Path, query: &str) {
-    let config = load_config(root);
+    let mut config = load_config(root);
+    config.embedding.dimensions = 3;
+    elephant_never_forgets::config::write_config(&root.join(".enf.toml"), &config).unwrap();
     let conn = Connection::open(root.join(".enf/index.sqlite")).unwrap();
     let profile = embed::active_profile(&config);
     let profile_id = db::upsert_embedding_profile(&conn, &profile).unwrap();
@@ -248,6 +250,41 @@ fn cached_query_only_succeeds_with_seeded_query_cache() {
     assert_eq!(json["results"][0]["mode"], "vector");
     assert_eq!(json["results"][0]["level"], "chunk");
     assert_eq!(json["results"][0]["vector_score"], 1.0);
+}
+
+#[test]
+fn cached_query_only_respects_disabled_query_cache() {
+    let temp = setup_indexed_project();
+    seed_agent_vector(temp.path(), "zebra");
+    let mut config = load_config(temp.path());
+    config.embedding.query_cache = false;
+    elephant_never_forgets::config::write_config(&temp.path().join(".enf.toml"), &config).unwrap();
+
+    enf()
+        .current_dir(temp.path())
+        .args(["search", "zebra", "--mode", "vector", "--cached-query-only"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "query embedding is not cached and --cached-query-only was set",
+        ));
+}
+
+#[test]
+fn keyword_search_does_not_treat_percent_or_underscore_as_wildcards() {
+    let temp = setup_indexed_project();
+
+    let output = enf()
+        .current_dir(temp.path())
+        .args(["search", "%_", "--mode", "keyword", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: Value = serde_json::from_slice(&output).unwrap();
+
+    assert!(json["results"].as_array().unwrap().is_empty());
 }
 
 #[test]

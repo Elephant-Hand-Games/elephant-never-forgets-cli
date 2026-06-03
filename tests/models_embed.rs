@@ -16,7 +16,7 @@ fn profile_hash_is_deterministic_and_uses_profile_fields() {
 
     let mut endpoint_variant = profile.clone();
     endpoint_variant.endpoint = Some("https://example.invalid/embed".into());
-    assert_eq!(baseline, profile_hash(&endpoint_variant));
+    assert_ne!(baseline, profile_hash(&endpoint_variant));
 
     let mut prefix_variant = profile.clone();
     prefix_variant.document_prefix = "search_document: alt ".into();

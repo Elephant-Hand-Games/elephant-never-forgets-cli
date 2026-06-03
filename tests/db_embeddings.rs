@@ -1,11 +1,16 @@
 use elephant_never_forgets::{config::Config, db, embed};
 use rusqlite::params;
 
+fn profile_with_dimensions(mut config: Config, dimensions: usize) -> embed::EmbeddingProfile {
+    config.embedding.dimensions = dimensions;
+    embed::active_profile(&config)
+}
+
 #[test]
 fn profile_scoped_chunk_embeddings_round_trip() {
     let temp = tempfile::tempdir().unwrap();
     let conn = db::open_or_create(&temp.path().join(".enf/index.sqlite")).unwrap();
-    let profile = embed::active_profile(&Config::default());
+    let profile = profile_with_dimensions(Config::default(), 3);
     let profile_id = db::upsert_embedding_profile(&conn, &profile).unwrap();
 
     conn.execute(
@@ -47,13 +52,41 @@ fn profile_scoped_chunk_embeddings_round_trip() {
 }
 
 #[test]
+fn chunk_embeddings_reject_profile_dimension_mismatch() {
+    let temp = tempfile::tempdir().unwrap();
+    let conn = db::open_or_create(&temp.path().join(".enf/index.sqlite")).unwrap();
+    let profile = profile_with_dimensions(Config::default(), 3);
+    let profile_id = db::upsert_embedding_profile(&conn, &profile).unwrap();
+
+    conn.execute(
+        "INSERT INTO files(path, hash, size_bytes, indexed_at, content)
+         VALUES ('docs/one.md', 'file-hash', 12, datetime('now'), 'alpha beta')",
+        [],
+    )
+    .unwrap();
+    let file_id = conn.last_insert_rowid();
+    conn.execute(
+        "INSERT INTO chunks(file_id, chunk_index, hash, text, start_line, end_line, token_count)
+         VALUES (?1, 0, 'chunk-hash', 'alpha beta', 1, 2, 2)",
+        [file_id],
+    )
+    .unwrap();
+    let chunk_id = conn.last_insert_rowid();
+
+    let error = db::upsert_chunk_embedding(&conn, profile_id, chunk_id, &[1.0, 0.0])
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("expected 3"));
+}
+
+#[test]
 fn query_embeddings_are_profile_scoped_and_update_last_used() {
     let temp = tempfile::tempdir().unwrap();
     let conn = db::open_or_create(&temp.path().join(".enf/index.sqlite")).unwrap();
     let mut config = Config::default();
-    let first_profile = embed::active_profile(&config);
+    let first_profile = profile_with_dimensions(config.clone(), 2);
     config.embedding.document_prefix = "alternate document: ".into();
-    let second_profile = embed::active_profile(&config);
+    let second_profile = profile_with_dimensions(config, 2);
     let first_profile_id = db::upsert_embedding_profile(&conn, &first_profile).unwrap();
     let second_profile_id = db::upsert_embedding_profile(&conn, &second_profile).unwrap();
 
@@ -88,7 +121,8 @@ fn query_embeddings_are_profile_scoped_and_update_last_used() {
 fn active_profile_streams_only_its_vectors_and_preserves_chunk_metadata() {
     let temp = tempfile::tempdir().unwrap();
     let conn = db::open_or_create(&temp.path().join(".enf/index.sqlite")).unwrap();
-    let config = Config::default();
+    let mut config = Config::default();
+    config.embedding.dimensions = 2;
     let active_profile = embed::active_profile(&config);
     let active_profile_id = db::upsert_active_embedding_profile(&conn, &config).unwrap();
 

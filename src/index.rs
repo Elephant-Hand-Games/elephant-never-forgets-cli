@@ -8,6 +8,7 @@ use std::{
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use rusqlite::{params, OptionalExtension, Transaction};
+use serde::Serialize;
 
 use crate::{
     cli::{IndexArgs, RemoveArgs},
@@ -16,17 +17,26 @@ use crate::{
 };
 
 pub fn run(args: IndexArgs) -> Result<()> {
-    let config = crate::config::load()?;
+    let mut config = crate::config::load()?;
+    crate::config::apply_provider_overrides(&mut config, &args.provider);
+    crate::config::validate(&config)?;
     let cwd = std::env::current_dir()?;
-    index_path(
+    let summary = index_path_with_options(
         &cwd,
         args.path,
         &config,
         EmbedOptions {
             install_models: args.install_models,
             no_embed: args.no_embed,
+            reembed: args.reembed,
+            changed_only: args.changed_only,
+            quiet: args.json,
         },
-    )
+    )?;
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&summary)?);
+    }
+    Ok(())
 }
 
 pub fn run_add(args: IndexArgs) -> Result<()> {
@@ -43,6 +53,9 @@ pub fn run_remove(args: RemoveArgs) -> Result<()> {
 pub struct EmbedOptions {
     pub install_models: bool,
     pub no_embed: bool,
+    pub reembed: bool,
+    pub changed_only: bool,
+    pub quiet: bool,
 }
 
 impl From<bool> for EmbedOptions {
@@ -50,8 +63,22 @@ impl From<bool> for EmbedOptions {
         Self {
             install_models,
             no_embed: false,
+            reembed: false,
+            changed_only: false,
+            quiet: false,
         }
     }
+}
+
+#[derive(Debug, Serialize)]
+pub struct IndexSummary {
+    pub path: String,
+    pub discovered_files: usize,
+    pub changed_files: usize,
+    pub embedded_chunks: usize,
+    pub reembedded: bool,
+    pub changed_only: bool,
+    pub no_embed: bool,
 }
 
 pub fn index_path(
@@ -60,6 +87,15 @@ pub fn index_path(
     config: &Config,
     embed_options: impl Into<EmbedOptions>,
 ) -> Result<()> {
+    index_path_with_options(root, path, config, embed_options).map(|_| ())
+}
+
+pub fn index_path_with_options(
+    root: &Path,
+    path: PathBuf,
+    config: &Config,
+    embed_options: impl Into<EmbedOptions>,
+) -> Result<IndexSummary> {
     let embed_options = embed_options.into();
     let db_path = root.join(&config.state.db_path);
     let mut conn = db::open_or_create(&db_path)?;
@@ -69,12 +105,16 @@ pub fn index_path(
     let tx = conn.transaction()?;
 
     let target = root.join(&path);
-    println!("==> Discovering files under {}", display_index_path(&path));
-    flush_stdout();
+    print_progress(
+        embed_options,
+        format_args!("==> Discovering files under {}", display_index_path(&path)),
+    );
     let discovered = discovery::discover(root, &target, config)?;
     let discovered_count = discovered.len();
-    println!("==> Indexing {discovered_count} files");
-    flush_stdout();
+    print_progress(
+        embed_options,
+        format_args!("==> Indexing {discovered_count} files"),
+    );
     let discovered_paths: HashSet<String> = discovered
         .iter()
         .map(|file| file.relative_path.clone())
@@ -84,19 +124,39 @@ pub fn index_path(
     remove_missing_files(&tx, &scope_prefix, &discovered_paths)?;
 
     let mut changed = 0usize;
-    for file in discovered {
-        changed += sync_file(&tx, &file, config)?;
+    let mut changed_paths = Vec::new();
+    for file in &discovered {
+        let file_changed = sync_file(&tx, file, config)?;
+        changed += file_changed;
+        if file_changed > 0 {
+            changed_paths.push(file.relative_path.clone());
+        }
     }
 
     tx.commit()?;
-    println!("✓ Indexed {discovered_count} files ({changed} changed)");
-    flush_stdout();
+    print_progress(
+        embed_options,
+        format_args!("✓ Indexed {discovered_count} files ({changed} changed)"),
+    );
 
-    let embedded = maybe_embed_missing_chunks(&conn, config, embed_options)?;
+    let reembed_paths = if embed_options.changed_only {
+        changed_paths
+    } else {
+        discovered_paths.iter().cloned().collect::<Vec<_>>()
+    };
+    let embedded = maybe_embed_missing_chunks(&conn, config, embed_options, &reembed_paths)?;
     if embedded > 0 {
-        println!("✓ Embedded {embedded} chunks");
+        print_progress(embed_options, format_args!("✓ Embedded {embedded} chunks"));
     }
-    Ok(())
+    Ok(IndexSummary {
+        path: display_index_path(&path),
+        discovered_files: discovered_count,
+        changed_files: changed,
+        embedded_chunks: embedded,
+        reembedded: embed_options.reembed,
+        changed_only: embed_options.changed_only,
+        no_embed: embed_options.no_embed,
+    })
 }
 
 pub fn remove_indexed_path(root: &Path, path: PathBuf, config: &Config) -> Result<()> {
@@ -118,6 +178,7 @@ fn maybe_embed_missing_chunks(
     conn: &rusqlite::Connection,
     config: &Config,
     embed_options: EmbedOptions,
+    reembed_paths: &[String],
 ) -> Result<usize> {
     if embed_options.no_embed {
         return Ok(0);
@@ -126,20 +187,27 @@ fn maybe_embed_missing_chunks(
     let mut provider = providers::build_provider(config)?;
     let profile = provider.profile();
     let profile_id = db::upsert_embedding_profile(conn, &profile)?;
+    if embed_options.reembed {
+        delete_embeddings_for_paths(conn, profile_id, reembed_paths)?;
+    }
     let total_missing = missing_embedding_count(conn, profile_id)?;
     if total_missing == 0 {
         return Ok(0);
     }
 
     if config.embedding.provider == Provider::Native {
-        println!("==> Loading native embedding model");
-        flush_stdout();
+        print_progress(
+            embed_options,
+            format_args!("==> Loading native embedding model"),
+        );
         provider.ensure_ready()?;
     }
 
     let batch_size = effective_embedding_batch_size(config);
-    println!("==> Embedding {total_missing} chunks (batch size {batch_size})");
-    flush_stdout();
+    print_progress(
+        embed_options,
+        format_args!("==> Embedding {total_missing} chunks (batch size {batch_size})"),
+    );
     let mut embedded = 0usize;
 
     loop {
@@ -149,8 +217,10 @@ fn maybe_embed_missing_chunks(
         }
         let batch_start = embedded + 1;
         let batch_end = embedded + chunks.len();
-        println!("==> Embedding chunks {batch_start}-{batch_end} of {total_missing}");
-        flush_stdout();
+        print_progress(
+            embed_options,
+            format_args!("==> Embedding chunks {batch_start}-{batch_end} of {total_missing}"),
+        );
         let texts = chunks
             .iter()
             .map(|chunk| chunk.text.clone())
@@ -167,11 +237,34 @@ fn maybe_embed_missing_chunks(
             db::upsert_chunk_embedding(conn, profile_id, chunk.chunk_id, vector)?;
             embedded += 1;
         }
-        println!("✓ Embedded {embedded}/{total_missing} chunks");
-        flush_stdout();
+        print_progress(
+            embed_options,
+            format_args!("✓ Embedded {embedded}/{total_missing} chunks"),
+        );
     }
 
     Ok(embedded)
+}
+
+fn delete_embeddings_for_paths(
+    conn: &rusqlite::Connection,
+    profile_id: i64,
+    paths: &[String],
+) -> Result<()> {
+    for path in paths {
+        conn.execute(
+            "DELETE FROM embeddings
+             WHERE profile_id = ?1
+               AND chunk_id IN (
+                 SELECT c.id
+                 FROM chunks c
+                 JOIN files f ON f.id = c.file_id
+                 WHERE f.path = ?2
+               )",
+            params![profile_id, path],
+        )?;
+    }
+    Ok(())
 }
 
 fn effective_embedding_batch_size(config: &Config) -> usize {
@@ -237,6 +330,13 @@ fn display_index_path(path: &Path) -> String {
 
 fn flush_stdout() {
     let _ = io::stdout().flush();
+}
+
+fn print_progress(options: EmbedOptions, args: std::fmt::Arguments<'_>) {
+    if !options.quiet {
+        println!("{args}");
+        flush_stdout();
+    }
 }
 
 fn sync_file(
@@ -453,21 +553,7 @@ fn delete_indexed_file(tx: &Transaction<'_>, file_id: i64) -> Result<()> {
     let path: String = tx.query_row("SELECT path FROM files WHERE id = ?1", [file_id], |row| {
         row.get(0)
     })?;
-    let mut stmt =
-        tx.prepare("SELECT id, text FROM chunks WHERE file_id = ?1 ORDER BY chunk_index")?;
-    let rows = stmt.query_map([file_id], |row| {
-        Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
-    })?;
-    let mut chunk_ids = Vec::new();
-    for row in rows {
-        chunk_ids.push(row?);
-    }
-    for (chunk_id, text) in chunk_ids {
-        tx.execute(
-            "INSERT INTO chunks_fts(chunks_fts, rowid, path, text) VALUES ('delete', ?1, ?2, ?3)",
-            params![chunk_id, path, text],
-        )?;
-    }
+    delete_chunks(tx, file_id, &path)?;
     tx.execute("DELETE FROM files WHERE id = ?1", [file_id])?;
     Ok(())
 }

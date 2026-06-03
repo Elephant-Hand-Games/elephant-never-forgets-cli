@@ -104,6 +104,42 @@ fn init_supports_native_aliases_model_and_cache_overrides() {
 }
 
 #[test]
+fn init_accepts_custom_provider_endpoint_and_dimensions() {
+    let temp = tempfile::tempdir().unwrap();
+
+    run_init(
+        temp.path(),
+        &[
+            "--provider",
+            "http",
+            "--model",
+            "custom-embedder",
+            "--endpoint",
+            "https://api.example.com/embeddings",
+            "--api-key-env",
+            "CUSTOM_EMBEDDING_KEY",
+            "--dimensions",
+            "1024",
+        ],
+    );
+
+    let config = read_config(&temp.path().join(".enf.toml"));
+    assert_eq!(config.embedding.provider, Provider::Http);
+    assert_eq!(config.embedding.engine, None);
+    assert_eq!(config.embedding.variant, None);
+    assert_eq!(config.embedding.model, "custom-embedder");
+    assert_eq!(
+        config.embedding.endpoint.as_deref(),
+        Some("https://api.example.com/embeddings")
+    );
+    assert_eq!(
+        config.embedding.api_key_env.as_deref(),
+        Some("CUSTOM_EMBEDDING_KEY")
+    );
+    assert_eq!(config.embedding.dimensions, 1024);
+}
+
+#[test]
 fn init_refuses_to_overwrite_existing_config_without_force() {
     let temp = tempfile::tempdir().unwrap();
     let config_path = temp.path().join(".enf.toml");

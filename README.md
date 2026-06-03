@@ -28,7 +28,7 @@ run the `export PATH=...` command printed by the installer.
 Install a specific release tag:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Elephant-Hand-Games/elephant-never-forgets-cli/main/scripts/install.sh | ENF_VERSION=v1.2.0 sh
+curl -fsSL https://raw.githubusercontent.com/Elephant-Hand-Games/elephant-never-forgets-cli/main/scripts/install.sh | ENF_VERSION=v1.2.3 sh
 ```
 
 Install somewhere else:
@@ -140,8 +140,8 @@ enf ci --no-embed
 
 ## Provider Examples
 
-Example provider setup is done at init, or overridden per indexing/searching
-command.
+Provider setup can be written during init, then overridden per indexing or
+search command when needed.
 
 - Native (Candle profile target):
   `enf init --db --provider native --model nomic-embed-text-v1.5 --variant quantized`

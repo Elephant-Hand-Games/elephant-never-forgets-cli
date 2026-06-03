@@ -70,10 +70,30 @@ install_from_cargo() {
     fi
   fi
   mkdir -p "$INSTALL_DIR"
-  cp "$cargo_root/bin/enf" "$INSTALL_DIR/enf"
-  chmod 755 "$INSTALL_DIR/enf"
-  echo "installed enf to $INSTALL_DIR/enf from source"
+  cp "$cargo_root/bin/$binary" "$INSTALL_DIR/$binary"
+  chmod 755 "$INSTALL_DIR/$binary"
+  echo "installed $binary to $INSTALL_DIR/$binary from source"
   ensure_on_path
+}
+
+verify_checksum() {
+  archive_path="$1"
+  checksum_path="$2"
+  expected="$(awk '{print $1}' "$checksum_path")"
+  if command -v sha256sum >/dev/null 2>&1; then
+    actual="$(sha256sum "$archive_path" | awk '{print $1}')"
+  elif command -v shasum >/dev/null 2>&1; then
+    actual="$(shasum -a 256 "$archive_path" | awk '{print $1}')"
+  else
+    echo "missing sha256sum or shasum for checksum verification" >&2
+    exit 1
+  fi
+  if [ "$actual" != "$expected" ]; then
+    echo "checksum mismatch for $(basename "$archive_path")" >&2
+    echo "expected: $expected" >&2
+    echo "actual:   $actual" >&2
+    exit 1
+  fi
 }
 
 shell_profile() {
@@ -140,7 +160,16 @@ else
   url="https://github.com/$REPO/releases/download/$VERSION/$archive"
 fi
 
+checksum_url="$url.sha256"
+
 if download "$url" "$tmpdir/$archive"; then
+  if download "$checksum_url" "$tmpdir/$archive.sha256"; then
+    verify_checksum "$tmpdir/$archive" "$tmpdir/$archive.sha256"
+  else
+    echo "checksum unavailable for $archive; falling back to cargo install" >&2
+    install_from_cargo
+    exit 0
+  fi
   mkdir -p "$INSTALL_DIR"
   tar -xzf "$tmpdir/$archive" -C "$tmpdir"
   cp "$tmpdir/$binary" "$INSTALL_DIR/$binary"

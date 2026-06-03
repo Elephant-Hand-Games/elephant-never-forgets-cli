@@ -246,6 +246,8 @@ fn vector_scoring_modes_match_expected_math() {
         ranking::vector_score(&left, &zero, VectorScoreMode::Cosine),
         0.0
     );
+    assert_eq!(ranking::dot_product(&left, &[1.0, 2.0]), 0.0);
+    assert_eq!(ranking::cosine_similarity(&left, &[1.0, 2.0]), 0.0);
 }
 
 #[test]

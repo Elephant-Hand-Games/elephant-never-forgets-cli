@@ -263,6 +263,7 @@ pub fn init(args: InitArgs) -> Result<()> {
             crate::index::EmbedOptions {
                 install_models: args.install_models,
                 no_embed: false,
+                ..Default::default()
             },
         )?;
     }
@@ -529,6 +530,17 @@ fn apply_init_overrides(config: &mut Config, args: &InitArgs) {
         config.state.model_cache = model_cache.clone().into();
     }
     normalize_provider_defaults(config);
+    if let Some(endpoint) = &args.endpoint {
+        config.embedding.endpoint = Some(endpoint.clone());
+    }
+    if let Some(api_key_env) = &args.api_key_env {
+        config.embedding.api_key_env = Some(api_key_env.clone());
+    }
+    if let Some(dimensions) = args.dimensions {
+        config.embedding.dimensions = dimensions;
+    } else if config.embedding.provider == Provider::Openai {
+        config.embedding.dimensions = openai_dimensions(&config.embedding.model);
+    }
 }
 
 pub fn normalize_provider_defaults(config: &mut Config) {
@@ -568,12 +580,12 @@ pub fn normalize_provider_defaults(config: &mut Config) {
             if config.embedding.model == "nomic-embed-text-v1.5" {
                 config.embedding.model = "text-embedding-3-small".into();
             }
-            config.embedding.dimensions = match config.embedding.model.as_str() {
-                "text-embedding-3-large" => 3072,
-                _ => 1536,
-            };
+            config.embedding.dimensions = openai_dimensions(&config.embedding.model);
         }
-        Provider::OpenaiCompatible | Provider::Http => {}
+        Provider::OpenaiCompatible | Provider::Http => {
+            config.embedding.engine = None;
+            config.embedding.variant = None;
+        }
     }
 }
 
@@ -596,6 +608,15 @@ pub fn apply_provider_overrides(config: &mut Config, overrides: &ProviderOverrid
     }
     if let Some(dimensions) = overrides.dimensions {
         config.embedding.dimensions = dimensions;
+    } else if config.embedding.provider == Provider::Openai {
+        config.embedding.dimensions = openai_dimensions(&config.embedding.model);
+    }
+}
+
+fn openai_dimensions(model: &str) -> usize {
+    match model {
+        "text-embedding-3-large" => 3072,
+        _ => 1536,
     }
 }
 

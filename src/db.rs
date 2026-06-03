@@ -135,6 +135,8 @@ pub fn open_or_create(path: &Path) -> Result<Connection> {
             .with_context(|| format!("creating database directory {}", parent.display()))?;
     }
     let conn = Connection::open(path).with_context(|| format!("opening {}", path.display()))?;
+    conn.pragma_update(None, "foreign_keys", "ON")?;
+    conn.pragma_update(None, "journal_mode", "WAL")?;
     migrate(&conn)?;
     Ok(conn)
 }
@@ -300,6 +302,7 @@ pub fn upsert_chunk_embedding(
     chunk_id: i64,
     vector: &[f32],
 ) -> Result<()> {
+    validate_vector_dimensions(conn, profile_id, vector)?;
     conn.execute(
         "INSERT INTO embeddings(profile_id, chunk_id, vector, created_at)
          VALUES (?1, ?2, ?3, datetime('now'))
@@ -337,6 +340,7 @@ pub fn upsert_query_embedding(
     normalized_query: &str,
     vector: &[f32],
 ) -> Result<()> {
+    validate_vector_dimensions(conn, profile_id, vector)?;
     conn.execute(
         "INSERT INTO query_embeddings(profile_id, normalized_query, vector, created_at, last_used_at)
          VALUES (?1, ?2, ?3, datetime('now'), datetime('now'))
@@ -344,6 +348,23 @@ pub fn upsert_query_embedding(
          DO UPDATE SET vector = excluded.vector, last_used_at = excluded.last_used_at",
         params![profile_id, normalized_query, serialize_vector(vector)],
     )?;
+    Ok(())
+}
+
+fn validate_vector_dimensions(conn: &Connection, profile_id: i64, vector: &[f32]) -> Result<()> {
+    let expected: i64 = conn.query_row(
+        "SELECT dimensions FROM embedding_profiles WHERE id = ?1",
+        [profile_id],
+        |row| row.get(0),
+    )?;
+    if vector.len() != expected as usize {
+        anyhow::bail!(
+            "embedding vector has {} dimensions; expected {} for profile {}",
+            vector.len(),
+            expected,
+            profile_id
+        );
+    }
     Ok(())
 }
 

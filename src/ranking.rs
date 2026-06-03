@@ -160,10 +160,16 @@ pub fn normalize_query(query: &str) -> String {
 }
 
 pub fn dot_product(left: &[f32], right: &[f32]) -> f32 {
+    if left.len() != right.len() {
+        return 0.0;
+    }
     left.iter().zip(right.iter()).map(|(l, r)| l * r).sum()
 }
 
 pub fn cosine_similarity(left: &[f32], right: &[f32]) -> f32 {
+    if left.len() != right.len() {
+        return 0.0;
+    }
     let dot = dot_product(left, right);
     let left_norm = left.iter().map(|value| value * value).sum::<f32>().sqrt();
     let right_norm = right.iter().map(|value| value * value).sum::<f32>().sqrt();

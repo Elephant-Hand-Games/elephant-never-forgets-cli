@@ -44,6 +44,12 @@ pub struct InitArgs {
     pub model: Option<String>,
     #[arg(long, value_enum)]
     pub variant: Option<ModelVariantArg>,
+    #[arg(long)]
+    pub endpoint: Option<String>,
+    #[arg(long)]
+    pub api_key_env: Option<String>,
+    #[arg(long)]
+    pub dimensions: Option<usize>,
     #[arg(long, value_enum)]
     pub model_cache: Option<ModelCacheArg>,
     #[arg(long)]

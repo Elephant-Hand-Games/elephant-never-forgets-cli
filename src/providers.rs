@@ -1,4 +1,4 @@
-use std::env;
+use std::{env, time::Duration};
 
 #[cfg(feature = "native-candle")]
 use crate::native_candle::NomicV15CandleEmbedding;
@@ -6,6 +6,7 @@ use anyhow::{Context, Result};
 use reqwest::{
     blocking::Client,
     header::{AUTHORIZATION, CONTENT_TYPE},
+    Url,
 };
 use serde::{Deserialize, Serialize};
 
@@ -176,7 +177,7 @@ impl NativeCandleProvider {
 impl OllamaProvider {
     pub fn from_config(config: &Config) -> Result<Self> {
         Ok(Self {
-            client: Client::new(),
+            client: embedding_client()?,
             endpoint: required_endpoint(config.embedding.endpoint.as_deref(), "ollama")?,
             model: config.embedding.model.clone(),
             dimensions: config.embedding.dimensions,
@@ -223,7 +224,7 @@ impl OllamaProvider {
 impl OpenAiProvider {
     pub fn from_config(config: &Config) -> Result<Self> {
         Ok(Self {
-            client: Client::new(),
+            client: embedding_client()?,
             endpoint: required_endpoint(config.embedding.endpoint.as_deref(), "openai")?,
             api_key_env: config
                 .embedding
@@ -276,7 +277,7 @@ impl OpenAiProvider {
 impl OpenAiCompatibleProvider {
     pub fn from_config(config: &Config) -> Result<Self> {
         Ok(Self {
-            client: Client::new(),
+            client: embedding_client()?,
             endpoint: required_endpoint(config.embedding.endpoint.as_deref(), "openai-compatible")?,
             api_key_env: config.embedding.api_key_env.clone(),
             model: config.embedding.model.clone(),
@@ -328,7 +329,7 @@ impl OpenAiCompatibleProvider {
 impl HttpProvider {
     pub fn from_config(config: &Config) -> Result<Self> {
         Ok(Self {
-            client: Client::new(),
+            client: embedding_client()?,
             endpoint: required_endpoint(config.embedding.endpoint.as_deref(), "http")?,
             api_key_env: config.embedding.api_key_env.clone(),
             model: config.embedding.model.clone(),
@@ -748,14 +749,31 @@ fn required_endpoint(endpoint: Option<&str>, provider: &str) -> Result<String> {
     let endpoint = endpoint
         .filter(|endpoint| !endpoint.trim().is_empty())
         .context(format!("{} endpoint is required", provider))?;
+    validate_endpoint(endpoint, provider)?;
     Ok(endpoint.to_string())
 }
 
 fn validate_endpoint(endpoint: &str, provider: &str) -> Result<()> {
-    if endpoint.trim().is_empty() {
+    let endpoint = endpoint.trim();
+    if endpoint.is_empty() {
         anyhow::bail!("{} endpoint is required", provider);
     }
-    Ok(())
+    let url = Url::parse(endpoint).with_context(|| format!("parsing {} endpoint", provider))?;
+    match url.scheme() {
+        "http" | "https" => Ok(()),
+        scheme => anyhow::bail!(
+            "{} endpoint must use http or https, got {}",
+            provider,
+            scheme
+        ),
+    }
+}
+
+fn embedding_client() -> Result<Client> {
+    Client::builder()
+        .timeout(Duration::from_secs(60))
+        .build()
+        .context("building embedding HTTP client")
 }
 
 fn api_key_value(api_key_env: Option<&str>) -> Result<Option<String>> {

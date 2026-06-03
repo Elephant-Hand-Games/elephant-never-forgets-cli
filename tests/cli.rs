@@ -1,5 +1,6 @@
 use assert_cmd::Command;
 use predicates::prelude::*;
+use serde_json::Value;
 
 #[test]
 fn help_exposes_core_commands() {
@@ -45,4 +46,34 @@ fn init_defaults_to_native_profile() {
     assert!(config.contains("model = \"nomic-embed-text-v1.5\""));
     assert!(config.contains("variant = \"quantized\""));
     assert!(config.contains("engine = \"candle\""));
+}
+
+#[test]
+fn index_json_outputs_machine_readable_summary() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(temp.path().join("README.md"), "Local notes").unwrap();
+    Command::cargo_bin("enf")
+        .unwrap()
+        .current_dir(temp.path())
+        .env("ENF_SKIP_NATIVE_MODEL_LOAD", "1")
+        .arg("init")
+        .assert()
+        .success();
+
+    let output = Command::cargo_bin("enf")
+        .unwrap()
+        .current_dir(temp.path())
+        .env("ENF_SKIP_NATIVE_MODEL_LOAD", "1")
+        .args(["index", ".", "--no-embed", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: Value = serde_json::from_slice(&output).unwrap();
+
+    assert_eq!(json["discovered_files"], 1);
+    assert_eq!(json["changed_files"], 1);
+    assert_eq!(json["embedded_chunks"], 0);
+    assert_eq!(json["no_embed"], true);
 }

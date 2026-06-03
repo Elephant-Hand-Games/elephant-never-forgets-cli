@@ -26,7 +26,7 @@ Commands:
 Initialize project state and write `.enf.toml`.
 
 ```text
-enf init [--db[=<sqlite|false>]] [--native-embed|--local-embed] [--provider <provider>] [--model <model>] [--variant <variant>] [--model-cache <scope>] [--install-models] [--index] [--force]
+enf init [--db[=<sqlite|false>]] [--native-embed|--local-embed] [--provider <provider>] [--model <model>] [--variant <variant>] [--endpoint <url>] [--api-key-env <env-var>] [--dimensions <usize>] [--model-cache <scope>] [--install-models] [--index] [--force]
 ```
 
 Flags:
@@ -43,6 +43,9 @@ Flags:
   - `http`
 - `--model <string>`
 - `--variant <variant>` where `<variant>` is `quantized` or `full`
+- `--endpoint <url>`
+- `--api-key-env <env-var>`
+- `--dimensions <usize>`
 - `--model-cache <scope>` where `<scope>` is `global` or `project`
 - `--install-models`
 - `--index`

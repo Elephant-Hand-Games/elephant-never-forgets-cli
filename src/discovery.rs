@@ -16,10 +16,26 @@ pub fn discover(root: &Path, target: &Path, config: &Config) -> Result<Vec<Disco
     let include = build_globset(&config.include.patterns)?;
     let exclude = build_globset(&config.exclude.patterns)?;
     let include_all = config.include.patterns.is_empty();
+    if !target.exists() {
+        anyhow::bail!("index target does not exist: {}", target.display());
+    }
+    let root = root
+        .canonicalize()
+        .with_context(|| format!("canonicalizing root {}", root.display()))?;
+    let target = target
+        .canonicalize()
+        .with_context(|| format!("canonicalizing target {}", target.display()))?;
+    if !target.starts_with(&root) {
+        anyhow::bail!(
+            "index target {} is outside project root {}",
+            target.display(),
+            root.display()
+        );
+    }
 
     if target.is_file() {
         let absolute_path = target.to_path_buf();
-        let relative_path = normalized_relative_path(root, &absolute_path)?;
+        let relative_path = normalized_relative_path(&root, &absolute_path)?;
         if exclude.is_match(&relative_path) {
             return Ok(Vec::new());
         }
@@ -30,13 +46,14 @@ pub fn discover(root: &Path, target: &Path, config: &Config) -> Result<Vec<Disco
     }
 
     let mut files = Vec::new();
-    for entry in WalkDir::new(target).into_iter().filter_map(Result::ok) {
+    for entry in WalkDir::new(&target) {
+        let entry = entry.with_context(|| format!("walking {}", target.display()))?;
         if !entry.file_type().is_file() {
             continue;
         }
 
         let absolute_path = entry.path().to_path_buf();
-        let relative_path = normalized_relative_path(root, &absolute_path)?;
+        let relative_path = normalized_relative_path(&root, &absolute_path)?;
         if !should_include(&relative_path, &include, &exclude, include_all) {
             continue;
         }

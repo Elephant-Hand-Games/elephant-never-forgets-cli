@@ -41,17 +41,19 @@ pub fn active_profile(config: &Config) -> EmbeddingProfile {
             ModelVariant::Quantized => "quantized".to_string(),
             ModelVariant::Full => "full".to_string(),
         });
+    let (engine, variant, endpoint) = match config.embedding.provider {
+        Provider::Native => (Some("candle".to_string()), variant, None),
+        Provider::Ollama | Provider::Openai | Provider::OpenaiCompatible | Provider::Http => {
+            (None, None, config.embedding.endpoint.clone())
+        }
+    };
     let mut profile = EmbeddingProfile {
         profile_hash: String::new(),
         provider: config.embedding.provider.as_str().to_string(),
-        engine: if config.embedding.provider == Provider::Native {
-            Some("candle".to_string())
-        } else {
-            config.embedding.engine.clone()
-        },
+        engine,
         model: config.embedding.model.clone(),
         variant,
-        endpoint: config.embedding.endpoint.clone(),
+        endpoint,
         dimensions: config.embedding.dimensions,
         document_prefix: config.embedding.document_prefix.clone(),
         query_prefix: config.embedding.query_prefix.clone(),
@@ -69,6 +71,7 @@ pub fn profile_hash(profile: &EmbeddingProfile) -> String {
     update_optional_hash_field(&mut hasher, "engine", profile.engine.as_deref());
     update_hash_field(&mut hasher, "model", &profile.model);
     update_optional_hash_field(&mut hasher, "variant", profile.variant.as_deref());
+    update_optional_hash_field(&mut hasher, "endpoint", profile.endpoint.as_deref());
     update_hash_field(&mut hasher, "dimensions", &profile.dimensions.to_string());
     update_hash_field(&mut hasher, "document_prefix", &profile.document_prefix);
     update_hash_field(&mut hasher, "query_prefix", &profile.query_prefix);

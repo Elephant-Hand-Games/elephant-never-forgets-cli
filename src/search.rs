@@ -30,7 +30,8 @@ pub fn run(args: SearchArgs, retrieve: bool) -> Result<()> {
 
     if args.cached_query_only
         && mode != SearchMode::Keyword
-        && crate::db::query_embedding(&conn, profile_id, &normalized_query)?.is_none()
+        && (!config.embedding.query_cache
+            || crate::db::query_embedding(&conn, profile_id, &normalized_query)?.is_none())
     {
         return Err(EnfError::QueryEmbeddingNotCached.into());
     }
@@ -162,24 +163,7 @@ fn vector_chunk_results(search: VectorSearch<'_>) -> Result<Vec<RankedResult>> {
         return Ok(Vec::new());
     }
 
-    let query_vector = if let Some(vector) =
-        crate::db::query_embedding(search.conn, search.profile_id, search.normalized_query)?
-    {
-        vector
-    } else {
-        if search.cached_query_only {
-            return Err(EnfError::QueryEmbeddingNotCached.into());
-        }
-        let mut provider = crate::providers::build_provider(search.config)?;
-        let vector = provider.embed_query(search.query)?;
-        crate::db::upsert_query_embedding(
-            search.conn,
-            search.profile_id,
-            search.normalized_query,
-            &vector,
-        )?;
-        vector
-    };
+    let query_vector = query_vector(search)?;
 
     let mut top = ranking::TopK::new(search.limit.saturating_mul(2).max(search.limit));
     crate::db::stream_vector_chunks_for_profile(
@@ -230,24 +214,7 @@ fn vector_file_results(search: VectorSearch<'_>) -> Result<Vec<RankedResult>> {
         return Ok(Vec::new());
     }
 
-    let query_vector = if let Some(vector) =
-        crate::db::query_embedding(search.conn, search.profile_id, search.normalized_query)?
-    {
-        vector
-    } else {
-        if search.cached_query_only {
-            return Err(EnfError::QueryEmbeddingNotCached.into());
-        }
-        let mut provider = crate::providers::build_provider(search.config)?;
-        let vector = provider.embed_query(search.query)?;
-        crate::db::upsert_query_embedding(
-            search.conn,
-            search.profile_id,
-            search.normalized_query,
-            &vector,
-        )?;
-        vector
-    };
+    let query_vector = query_vector(search)?;
 
     let mut files: HashMap<i64, FileVectorAggregate> = HashMap::new();
     crate::db::stream_vector_chunks_for_profile(
@@ -300,6 +267,32 @@ fn vector_file_results(search: VectorSearch<'_>) -> Result<Vec<RankedResult>> {
         });
     }
     Ok(top.into_sorted_vec())
+}
+
+fn query_vector(search: VectorSearch<'_>) -> Result<Vec<f32>> {
+    if search.config.embedding.query_cache {
+        if let Some(vector) =
+            crate::db::query_embedding(search.conn, search.profile_id, search.normalized_query)?
+        {
+            return Ok(vector);
+        }
+    }
+
+    if search.cached_query_only {
+        return Err(EnfError::QueryEmbeddingNotCached.into());
+    }
+
+    let mut provider = crate::providers::build_provider(search.config)?;
+    let vector = provider.embed_query(search.query)?;
+    if search.config.embedding.query_cache {
+        crate::db::upsert_query_embedding(
+            search.conn,
+            search.profile_id,
+            search.normalized_query,
+            &vector,
+        )?;
+    }
+    Ok(vector)
 }
 
 struct FileVectorAggregate {
@@ -357,17 +350,20 @@ fn query_chunks(
     snippet_chars: usize,
     profile_hash: &str,
 ) -> Result<Vec<RankedResult>> {
-    let like_query = format!("%{}%", query);
+    let Some(fts_query) = fts_query(query) else {
+        return Ok(Vec::new());
+    };
     let mut stmt = conn.prepare(
         "SELECT f.id, c.id, f.path, c.chunk_index, c.start_line, c.end_line, c.text
-         FROM chunks c
+         FROM chunks_fts
+         JOIN chunks c ON c.id = chunks_fts.rowid
          JOIN files f ON f.id = c.file_id
-         WHERE c.text LIKE ?1 OR f.path LIKE ?1
-         ORDER BY f.path, c.chunk_index
+         WHERE chunks_fts MATCH ?1
+         ORDER BY bm25(chunks_fts), f.path, c.chunk_index
          LIMIT ?2",
     )?;
     let rows = stmt.query_map(
-        rusqlite::params![like_query, limit.saturating_mul(4).max(limit) as i64],
+        rusqlite::params![fts_query, limit.saturating_mul(4).max(limit) as i64],
         |row| {
             Ok((
                 row.get::<_, i64>(0)?,
@@ -424,15 +420,28 @@ fn query_files(
     snippet_chars: usize,
     profile_hash: &str,
 ) -> Result<Vec<RankedResult>> {
-    let like_query = format!("%{}%", query);
+    let Some(fts_query) = fts_query(query) else {
+        return Ok(Vec::new());
+    };
     let mut stmt = conn.prepare(
-        "SELECT id, path, content
-         FROM files
-         WHERE content LIKE ?1 OR path LIKE ?1
+        "WITH matches AS (
+           SELECT f.id, f.path, f.content, c.text
+           FROM chunks_fts
+           JOIN chunks c ON c.id = chunks_fts.rowid
+           JOIN files f ON f.id = c.file_id
+           WHERE chunks_fts MATCH ?1
+         ),
+         ranked AS (
+           SELECT id, path, content, group_concat(text, char(10)) AS matched_text
+           FROM matches
+           GROUP BY id, path, content
+         )
+         SELECT id, path, COALESCE(content, matched_text)
+         FROM ranked
          ORDER BY path
          LIMIT ?2",
     )?;
-    let rows = stmt.query_map(rusqlite::params![like_query, limit as i64], |row| {
+    let rows = stmt.query_map(rusqlite::params![fts_query, limit as i64], |row| {
         Ok((
             row.get::<_, i64>(0)?,
             row.get::<_, String>(1)?,
@@ -481,6 +490,19 @@ fn snippet(text: &str, chars: usize) -> String {
     text.chars().take(chars).collect()
 }
 
+fn fts_query(query: &str) -> Option<String> {
+    let terms = query
+        .split(|ch: char| !ch.is_alphanumeric())
+        .filter(|term| !term.is_empty())
+        .map(|term| format!("\"{}\"", term.replace('"', "\"\"")))
+        .collect::<Vec<_>>();
+    if terms.is_empty() {
+        None
+    } else {
+        Some(terms.join(" OR "))
+    }
+}
+
 fn weighted_score(
     mode: &SearchMode,
     config: &crate::config::Config,
@@ -518,6 +540,20 @@ fn top_results(
     limit: usize,
     max_chunks_per_file: usize,
 ) -> Vec<RankedResult> {
+    let mut deduped: HashMap<(Option<i64>, Option<i64>, String), RankedResult> = HashMap::new();
+    for result in results {
+        let key = (result.file_id, result.chunk_id, result.level.clone());
+        match deduped.get_mut(&key) {
+            Some(existing) if result.score > existing.score => {
+                *existing = result;
+            }
+            Some(_) => {}
+            None => {
+                deduped.insert(key, result);
+            }
+        }
+    }
+    let results = deduped.into_values().collect::<Vec<_>>();
     let candidate_limit = limit.saturating_mul(max_chunks_per_file.max(1)).max(limit);
     let candidates = ranking::top_k(results, candidate_limit);
     let mut chunk_counts: HashMap<i64, usize> = HashMap::new();

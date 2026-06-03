@@ -1,5 +1,6 @@
 use elephant_never_forgets::{
     config::{self, Config, Provider},
+    embed,
     providers::{
         build_provider, parse_ollama_embeddings, parse_openai_embeddings, HttpProvider,
         OllamaProvider, OpenAiCompatibleProvider, OpenAiProvider,
@@ -76,6 +77,34 @@ fn build_provider_dispatches_to_the_expected_profiles() {
     assert_eq!(native.profile().engine.as_deref(), Some("candle"));
     assert_eq!(native.profile().model, "nomic-embed-text-v1.5");
     assert_eq!(native.profile().variant.as_deref(), Some("quantized"));
+}
+
+#[test]
+fn active_profile_matches_provider_profile_for_all_providers() {
+    for provider in [
+        Provider::Native,
+        Provider::Ollama,
+        Provider::Openai,
+        Provider::OpenaiCompatible,
+        Provider::Http,
+    ] {
+        let config = base_config(provider);
+        let provider = build_provider(&config).unwrap();
+        assert_eq!(embed::active_profile(&config), provider.profile());
+    }
+}
+
+#[test]
+fn endpoint_changes_embedding_profile_identity() {
+    let mut first = base_config(Provider::Http);
+    first.embedding.endpoint = Some("https://example.invalid/a".into());
+    let mut second = base_config(Provider::Http);
+    second.embedding.endpoint = Some("https://example.invalid/b".into());
+
+    assert_ne!(
+        embed::active_profile(&first).profile_hash,
+        embed::active_profile(&second).profile_hash
+    );
 }
 
 #[test]

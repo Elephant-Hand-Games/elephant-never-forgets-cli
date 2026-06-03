@@ -3,7 +3,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use elephant_never_forgets::{config::Config, discovery, index};
+use elephant_never_forgets::{config::Config, db, discovery, embed, index};
 use rusqlite::Connection;
 
 fn write_file(root: &Path, relative: &str, contents: &str) {
@@ -91,6 +91,7 @@ fn index_keeps_chunk_stability_for_unchanged_files() {
         index::EmbedOptions {
             install_models: false,
             no_embed: true,
+            ..Default::default()
         },
     )
     .unwrap();
@@ -104,6 +105,7 @@ fn index_keeps_chunk_stability_for_unchanged_files() {
         index::EmbedOptions {
             install_models: false,
             no_embed: true,
+            ..Default::default()
         },
     )
     .unwrap();
@@ -134,6 +136,7 @@ fn index_requires_installed_native_model_unless_embedding_is_disabled() {
         index::EmbedOptions {
             install_models: false,
             no_embed: true,
+            ..Default::default()
         },
     )
     .unwrap();
@@ -143,6 +146,28 @@ fn index_requires_installed_native_model_unless_embedding_is_disabled() {
         .query_row("SELECT COUNT(*) FROM files", [], |row| row.get(0))
         .unwrap();
     assert_eq!(files, 1);
+}
+
+#[test]
+fn index_fails_for_missing_target_path() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    let config = test_config();
+
+    let error = index::index_path(
+        root,
+        PathBuf::from("does-not-exist"),
+        &config,
+        index::EmbedOptions {
+            install_models: false,
+            no_embed: true,
+            ..Default::default()
+        },
+    )
+    .unwrap_err()
+    .to_string();
+
+    assert!(error.contains("index target does not exist"));
 }
 
 #[test]
@@ -161,6 +186,7 @@ fn index_removes_deleted_files_when_root_is_reindexed() {
         index::EmbedOptions {
             install_models: false,
             no_embed: true,
+            ..Default::default()
         },
     )
     .unwrap();
@@ -172,6 +198,7 @@ fn index_removes_deleted_files_when_root_is_reindexed() {
         index::EmbedOptions {
             install_models: false,
             no_embed: true,
+            ..Default::default()
         },
     )
     .unwrap();
@@ -204,6 +231,7 @@ fn explicit_file_indexing_records_file_type_and_remove_deletes_it() {
         index::EmbedOptions {
             install_models: false,
             no_embed: true,
+            ..Default::default()
         },
     )
     .unwrap();
@@ -228,6 +256,54 @@ fn explicit_file_indexing_records_file_type_and_remove_deletes_it() {
 }
 
 #[test]
+fn deleting_files_removes_chunks_and_embeddings_after_reopening_database() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    let mut config = test_config();
+    config.embedding.dimensions = 3;
+
+    write_file(root, "docs/remove-me.txt", "alpha beta gamma");
+    index::index_path(
+        root,
+        PathBuf::from("."),
+        &config,
+        index::EmbedOptions {
+            install_models: false,
+            no_embed: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    {
+        let conn = db::open_or_create(&root.join(".enf/index.sqlite")).unwrap();
+        let profile = embed::active_profile(&config);
+        let profile_id = db::upsert_embedding_profile(&conn, &profile).unwrap();
+        let chunk_id: i64 = conn
+            .query_row("SELECT id FROM chunks LIMIT 1", [], |row| row.get(0))
+            .unwrap();
+        db::upsert_chunk_embedding(&conn, profile_id, chunk_id, &[1.0, 0.0, 0.0]).unwrap();
+    }
+
+    index::remove_indexed_path(root, PathBuf::from("docs/remove-me.txt"), &config).unwrap();
+
+    let conn = db::open_or_create(&root.join(".enf/index.sqlite")).unwrap();
+    let files: i64 = conn
+        .query_row("SELECT COUNT(*) FROM files", [], |row| row.get(0))
+        .unwrap();
+    let chunks: i64 = conn
+        .query_row("SELECT COUNT(*) FROM chunks", [], |row| row.get(0))
+        .unwrap();
+    let embeddings: i64 = conn
+        .query_row("SELECT COUNT(*) FROM embeddings", [], |row| row.get(0))
+        .unwrap();
+
+    assert_eq!(files, 0);
+    assert_eq!(chunks, 0);
+    assert_eq!(embeddings, 0);
+}
+
+#[test]
 fn index_honors_store_full_files_and_store_chunks_flags() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path();
@@ -243,6 +319,7 @@ fn index_honors_store_full_files_and_store_chunks_flags() {
         index::EmbedOptions {
             install_models: false,
             no_embed: true,
+            ..Default::default()
         },
     )
     .unwrap();
