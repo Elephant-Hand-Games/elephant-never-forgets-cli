@@ -1,6 +1,7 @@
 use std::{
     collections::HashSet,
     fs,
+    io::{self, Write},
     path::{Component, Path, PathBuf},
 };
 
@@ -68,7 +69,12 @@ pub fn index_path(
     let tx = conn.transaction()?;
 
     let target = root.join(&path);
+    println!("==> Discovering files under {}", display_index_path(&path));
+    flush_stdout();
     let discovered = discovery::discover(root, &target, config)?;
+    let discovered_count = discovered.len();
+    println!("==> Indexing {discovered_count} files");
+    flush_stdout();
     let discovered_paths: HashSet<String> = discovered
         .iter()
         .map(|file| file.relative_path.clone())
@@ -77,17 +83,16 @@ pub fn index_path(
 
     remove_missing_files(&tx, &scope_prefix, &discovered_paths)?;
 
-    let discovered_count = discovered.len();
     let mut changed = 0usize;
     for file in discovered {
         changed += sync_file(&tx, &file, config)?;
     }
 
     tx.commit()?;
+    println!("✓ Indexed {discovered_count} files ({changed} changed)");
+    flush_stdout();
 
     let embedded = maybe_embed_missing_chunks(&conn, config, embed_options)?;
-    println!("==> Indexing {discovered_count} files");
-    println!("✓ Indexed {discovered_count} files ({changed} changed)");
     if embedded > 0 {
         println!("✓ Embedded {embedded} chunks");
     }
@@ -121,10 +126,24 @@ fn maybe_embed_missing_chunks(
     let mut provider = providers::build_provider(config)?;
     let profile = provider.profile();
     let profile_id = db::upsert_embedding_profile(conn, &profile)?;
+    let total_missing = missing_embedding_count(conn, profile_id)?;
+    if total_missing == 0 {
+        return Ok(0);
+    }
+
+    if config.embedding.provider == Provider::Native {
+        println!("==> Loading native embedding model");
+        flush_stdout();
+        provider.ensure_ready()?;
+    }
+
+    let batch_size = effective_embedding_batch_size(config);
+    println!("==> Embedding {total_missing} chunks (batch size {batch_size})");
+    flush_stdout();
     let mut embedded = 0usize;
 
     loop {
-        let chunks = db::chunks_missing_embeddings(conn, profile_id, config.embedding.batch_size)?;
+        let chunks = db::chunks_missing_embeddings(conn, profile_id, batch_size)?;
         if chunks.is_empty() {
             break;
         }
@@ -144,9 +163,31 @@ fn maybe_embed_missing_chunks(
             db::upsert_chunk_embedding(conn, profile_id, chunk.chunk_id, vector)?;
             embedded += 1;
         }
+        println!("✓ Embedded {embedded}/{total_missing} chunks");
+        flush_stdout();
     }
 
     Ok(embedded)
+}
+
+fn effective_embedding_batch_size(config: &Config) -> usize {
+    if config.embedding.provider == Provider::Native {
+        config.embedding.batch_size.clamp(1, 8)
+    } else {
+        config.embedding.batch_size.max(1)
+    }
+}
+
+fn missing_embedding_count(conn: &rusqlite::Connection, profile_id: i64) -> Result<usize> {
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*)
+         FROM chunks c
+         LEFT JOIN embeddings e ON e.chunk_id = c.id AND e.profile_id = ?1
+         WHERE e.id IS NULL",
+        [profile_id],
+        |row| row.get(0),
+    )?;
+    Ok(count as usize)
 }
 
 fn ensure_embedding_ready(root: &Path, config: &Config, embed_options: EmbedOptions) -> Result<()> {
@@ -167,6 +208,18 @@ fn ensure_embedding_ready(root: &Path, config: &Config, embed_options: EmbedOpti
     }
 
     Ok(())
+}
+
+fn display_index_path(path: &Path) -> String {
+    if path.as_os_str().is_empty() {
+        ".".into()
+    } else {
+        path.display().to_string()
+    }
+}
+
+fn flush_stdout() {
+    let _ = io::stdout().flush();
 }
 
 fn sync_file(
