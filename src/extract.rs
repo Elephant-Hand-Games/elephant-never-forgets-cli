@@ -16,6 +16,7 @@ pub fn extract_text(path: &Path) -> Result<ExtractedDocument> {
 
     let text =
         std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+    let text = normalize_text(&text);
     Ok(ExtractedDocument {
         line_count: line_count(&text),
         text,
@@ -34,7 +35,7 @@ fn extract_docx(path: &Path) -> Result<ExtractedDocument> {
         .read_to_string(&mut xml)
         .with_context(|| format!("extracting text from {}", path.display()))?;
 
-    let text = extract_docx_xml_text(&xml);
+    let text = normalize_text(&extract_docx_xml_text(&xml));
     Ok(ExtractedDocument {
         line_count: line_count(&text),
         text,
@@ -85,7 +86,11 @@ fn extract_docx_xml_text(xml: &str) -> String {
             continue;
         }
 
-        cursor += 1;
+        cursor += remainder
+            .chars()
+            .next()
+            .map(|ch| ch.len_utf8())
+            .unwrap_or(1);
     }
 
     text.trim_end_matches(['\n', '\r']).to_string()
@@ -114,4 +119,8 @@ fn decode_xml_entities(raw: &str) -> String {
     decoded = decoded.replace("&amp;", "&");
     decoded = decoded.replace("&apos;", "'");
     decoded.replace("&quot;", "\"")
+}
+
+fn normalize_text(text: &str) -> String {
+    text.replace("\r\n", "\n").replace('\r', "\n")
 }

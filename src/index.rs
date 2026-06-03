@@ -98,20 +98,20 @@ fn sync_file(
 }
 
 fn load_file(tx: &Transaction<'_>, path: &str) -> Result<Option<FileRecord>> {
-    tx.query_row(
-        "SELECT id, hash, size_bytes, content FROM files WHERE path = ?1",
-        [path],
-        |row| {
-            Ok(FileRecord {
-                id: row.get(0)?,
-                hash: row.get(1)?,
-                size_bytes: row.get(2)?,
-                content: row.get(3)?,
-            })
-        },
-    )
-    .optional()
-    .map_err(Into::into)
+    Ok(tx
+        .query_row(
+            "SELECT id, hash, size_bytes, content FROM files WHERE path = ?1",
+            [path],
+            |row| {
+                Ok(FileRecord {
+                    id: row.get(0)?,
+                    hash: row.get(1)?,
+                    size_bytes: row.get(2)?,
+                    content: row.get(3)?,
+                })
+            },
+        )
+        .optional()?)
 }
 
 fn replace_indexed_file(
@@ -138,15 +138,26 @@ fn replace_chunks(
     text: &str,
     config: &Config,
 ) -> Result<()> {
-    delete_chunks(tx, file_id)?;
+    delete_chunks(tx, file_id, path)?;
     insert_chunks(tx, file_id, path, text, config)
 }
 
-fn delete_chunks(tx: &Transaction<'_>, file_id: i64) -> Result<()> {
-    tx.execute(
-        "DELETE FROM chunks_fts WHERE rowid IN (SELECT id FROM chunks WHERE file_id = ?1)",
-        [file_id],
-    )?;
+fn delete_chunks(tx: &Transaction<'_>, file_id: i64, path: &str) -> Result<()> {
+    let mut stmt =
+        tx.prepare("SELECT id, text FROM chunks WHERE file_id = ?1 ORDER BY chunk_index")?;
+    let rows = stmt.query_map([file_id], |row| {
+        Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+    })?;
+    let mut chunk_ids = Vec::new();
+    for row in rows {
+        chunk_ids.push(row?);
+    }
+    for (chunk_id, text) in chunk_ids {
+        tx.execute(
+            "INSERT INTO chunks_fts(chunks_fts, rowid, path, text) VALUES ('delete', ?1, ?2, ?3)",
+            params![chunk_id, path, text],
+        )?;
+    }
     tx.execute("DELETE FROM chunks WHERE file_id = ?1", [file_id])?;
     Ok(())
 }
@@ -212,10 +223,24 @@ fn remove_missing_files(
 }
 
 fn delete_indexed_file(tx: &Transaction<'_>, file_id: i64) -> Result<()> {
-    tx.execute(
-        "DELETE FROM chunks_fts WHERE rowid IN (SELECT id FROM chunks WHERE file_id = ?1)",
-        [file_id],
-    )?;
+    let path: String = tx.query_row("SELECT path FROM files WHERE id = ?1", [file_id], |row| {
+        row.get(0)
+    })?;
+    let mut stmt =
+        tx.prepare("SELECT id, text FROM chunks WHERE file_id = ?1 ORDER BY chunk_index")?;
+    let rows = stmt.query_map([file_id], |row| {
+        Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+    })?;
+    let mut chunk_ids = Vec::new();
+    for row in rows {
+        chunk_ids.push(row?);
+    }
+    for (chunk_id, text) in chunk_ids {
+        tx.execute(
+            "INSERT INTO chunks_fts(chunks_fts, rowid, path, text) VALUES ('delete', ?1, ?2, ?3)",
+            params![chunk_id, path, text],
+        )?;
+    }
     tx.execute("DELETE FROM files WHERE id = ?1", [file_id])?;
     Ok(())
 }
