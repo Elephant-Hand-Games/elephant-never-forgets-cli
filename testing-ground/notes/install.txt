@@ -1,8 +1,10 @@
 Install options:
 
-1. Local development:
-   cargo install --path /Users/turnercore/Projects/CLI/elephant-never-forgets-cli --locked
-
-2. Release script after a tagged GitHub release exists:
+1. Remote install:
    curl -fsSL https://raw.githubusercontent.com/Elephant-Hand-Games/elephant-never-forgets-cli/main/scripts/install.sh | sh
 
+2. Direct Cargo install from the remote repo:
+   cargo install --git https://github.com/Elephant-Hand-Games/elephant-never-forgets-cli.git --locked
+
+3. Local development checkout:
+   cargo install --path /Users/turnercore/Projects/CLI/elephant-never-forgets-cli --locked

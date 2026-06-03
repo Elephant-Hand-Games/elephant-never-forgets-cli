@@ -14,29 +14,32 @@ workflow files.
 
 ## Installation
 
-### From this repo while developing
-
-```sh
-cargo install --path . --locked
-```
-
-### From GitHub releases
-
-After tagged releases are available, the install script downloads prebuilt
-macOS/Linux archives and installs `enf` into `$HOME/.local/bin` by default:
+### Remote install
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/Elephant-Hand-Games/elephant-never-forgets-cli/main/scripts/install.sh | sh
 ```
 
-Override install location if needed:
+The installer downloads a prebuilt macOS/Linux release archive when one exists.
+Before the first binary release, or when no archive exists for your platform, it
+falls back to installing from the Git repo with Cargo:
 
 ```sh
-ENF_INSTALL_DIR=/usr/local/bin sh scripts/install.sh
+cargo install --git https://github.com/Elephant-Hand-Games/elephant-never-forgets-cli.git --locked
 ```
 
-If a release archive does not exist for your platform, the script falls back to
-`cargo install --git https://github.com/Elephant-Hand-Games/elephant-never-forgets-cli.git --locked`.
+The default binary install location for release archives is `$HOME/.local/bin`.
+Override it if needed:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Elephant-Hand-Games/elephant-never-forgets-cli/main/scripts/install.sh | ENF_INSTALL_DIR=/usr/local/bin sh
+```
+
+### From a local checkout while developing
+
+```sh
+cargo install --path . --locked
+```
 
 Homebrew support is practical after the first release archive exists. It needs a
 tap formula with the release URL and SHA-256 checksum; the release workflow in
