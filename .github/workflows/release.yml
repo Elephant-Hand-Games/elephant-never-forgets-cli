@@ -24,13 +24,31 @@ jobs:
             target: x86_64-pc-windows-msvc
 
     steps:
+      - name: Check for existing release asset
+        id: release_asset
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          archive="enf-${{ matrix.target }}.tar.gz"
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' | grep -Fx "$archive" >/dev/null; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "$archive already exists on $GITHUB_REF_NAME; skipping build"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
       - uses: actions/checkout@v4
+        if: steps.release_asset.outputs.exists != 'true'
       - uses: dtolnay/rust-toolchain@stable
+        if: steps.release_asset.outputs.exists != 'true'
         with:
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
+        if: steps.release_asset.outputs.exists != 'true'
       - run: cargo build --release --locked --target ${{ matrix.target }}
+        if: steps.release_asset.outputs.exists != 'true'
       - name: Package archive
+        if: steps.release_asset.outputs.exists != 'true'
         shell: bash
         run: |
           mkdir -p dist
@@ -46,6 +64,7 @@ jobs:
             sha256sum "enf-${{ matrix.target }}.tar.gz" > "enf-${{ matrix.target }}.tar.gz.sha256"
           fi
       - uses: softprops/action-gh-release@v2
+        if: steps.release_asset.outputs.exists != 'true'
         with:
           files: |
             enf-${{ matrix.target }}.tar.gz
