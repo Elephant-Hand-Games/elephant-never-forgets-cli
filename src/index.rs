@@ -114,6 +114,10 @@ fn sync_file(
             && existing.size_bytes == size_bytes
             && existing.content == content
         {
+            if !config.index.store_chunks && file_has_chunks(tx, existing.id)? {
+                delete_chunks(tx, existing.id, &file.relative_path)?;
+                return Ok(1);
+            }
             return Ok(0);
         }
         replace_indexed_file(
@@ -142,6 +146,14 @@ fn sync_file(
     let file_id = tx.last_insert_rowid();
     insert_chunks(tx, file_id, &file.relative_path, &extracted.text, config)?;
     Ok(1)
+}
+
+fn file_has_chunks(tx: &Transaction<'_>, file_id: i64) -> Result<bool> {
+    Ok(tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM chunks WHERE file_id = ?1)",
+        [file_id],
+        |row| row.get(0),
+    )?)
 }
 
 fn load_file(tx: &Transaction<'_>, path: &str) -> Result<Option<FileRecord>> {

@@ -120,3 +120,30 @@ fn index_removes_deleted_files_when_root_is_reindexed() {
     assert_eq!(paths, vec!["docs/kept.txt"]);
     assert!(chunk_rows(root, "docs/gone.txt").is_empty());
 }
+
+#[test]
+fn index_honors_store_full_files_and_store_chunks_flags() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    let mut config = test_config();
+    config.index.store_full_files = false;
+    config.index.store_chunks = false;
+
+    write_file(root, "docs/config.txt", "alpha beta gamma");
+    index::index_path(root, PathBuf::from("."), &config, false).unwrap();
+
+    let conn = db_connection(root);
+    let content: Option<String> = conn
+        .query_row(
+            "SELECT content FROM files WHERE path = 'docs/config.txt'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let chunks: i64 = conn
+        .query_row("SELECT COUNT(*) FROM chunks", [], |row| row.get(0))
+        .unwrap();
+
+    assert_eq!(content, None);
+    assert_eq!(chunks, 0);
+}

@@ -185,7 +185,23 @@ fn provider_overrides_use_a_distinct_profile_for_search() {
         json["profile_hash"].as_str().unwrap(),
         default_profile.profile_hash
     );
+    assert!(json["warnings"][0]
+        .as_str()
+        .unwrap()
+        .contains("has no indexed embeddings"));
     assert_eq!(json["results"][0]["mode"], "keyword");
+}
+
+#[test]
+fn vector_mode_without_native_vectors_reports_missing_model() {
+    let temp = setup_indexed_project();
+
+    enf()
+        .current_dir(temp.path())
+        .args(["search", "zebra", "--mode", "vector"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("enf models install"));
 }
 
 #[test]

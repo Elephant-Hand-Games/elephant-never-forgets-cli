@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use crate::{
     cli::SearchArgs,
-    config::{SearchLevel, SearchMode},
+    config::{Provider, SearchLevel, SearchMode},
     errors::EnfError,
     ranking::{self, RankedResult},
 };
@@ -37,6 +37,7 @@ pub fn run(args: SearchArgs, retrieve: bool) -> Result<()> {
 
     let limit = args.limit.unwrap_or(config.search.limit);
     let mut results = Vec::new();
+    let mut warnings = Vec::new();
     if mode != SearchMode::Vector {
         if level != SearchLevel::File {
             results.extend(query_chunks(
@@ -58,6 +59,16 @@ pub fn run(args: SearchArgs, retrieve: bool) -> Result<()> {
         }
     }
     if mode != SearchMode::Keyword {
+        let has_vectors = active_profile_has_vectors(&conn, profile_id)?;
+        if !has_vectors {
+            if mode == SearchMode::Vector && config.embedding.provider == Provider::Native {
+                return Err(EnfError::NativeModelMissing.into());
+            }
+            warnings.push(format!(
+                "active profile {} has no indexed embeddings; run `enf index --install-models .` to populate vectors",
+                profile.profile_hash
+            ));
+        }
         let vector_search = VectorSearch {
             conn: &conn,
             config: &config,
@@ -84,10 +95,14 @@ pub fn run(args: SearchArgs, retrieve: bool) -> Result<()> {
             serde_json::to_string_pretty(&serde_json::json!({
                 "query": args.query,
                 "profile_hash": profile.profile_hash,
+                "warnings": warnings,
                 "results": results,
             }))?
         );
     } else {
+        for warning in &warnings {
+            eprintln!("warning: {warning}");
+        }
         for result in results {
             if let (Some(start), Some(end)) = (result.start_line, result.end_line) {
                 println!("{}:{}-{}  {:.3}", result.path, start, end, result.score);
@@ -97,6 +112,10 @@ pub fn run(args: SearchArgs, retrieve: bool) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn active_profile_has_vectors(conn: &rusqlite::Connection, profile_id: i64) -> Result<bool> {
+    Ok(!crate::db::vector_chunks_for_profile(conn, profile_id, 1, 0)?.is_empty())
 }
 
 #[derive(Clone, Copy)]
