@@ -56,6 +56,17 @@ download() {
   fi
 }
 
+install_executable() {
+  source_path="$1"
+  mkdir -p "$INSTALL_DIR"
+
+  staged_path="$(mktemp "$INSTALL_DIR/.$binary.tmp.XXXXXX")"
+  cp "$source_path" "$staged_path"
+  chmod 755 "$staged_path"
+  mv -f "$staged_path" "$INSTALL_DIR/$binary"
+  staged_path=""
+}
+
 install_from_cargo() {
   need cargo
   cargo_root="$tmpdir/cargo-root"
@@ -69,9 +80,7 @@ install_from_cargo() {
       CARGO_HOME="$cargo_home" cargo install --git "https://github.com/$REPO.git" --tag "$VERSION" --locked --root "$cargo_root"
     fi
   fi
-  mkdir -p "$INSTALL_DIR"
-  cp "$cargo_root/bin/$binary" "$INSTALL_DIR/$binary"
-  chmod 755 "$INSTALL_DIR/$binary"
+  install_executable "$cargo_root/bin/$binary"
   echo "installed $binary to $INSTALL_DIR/$binary from source"
   ensure_on_path
 }
@@ -140,7 +149,8 @@ case "$target" in
   *windows*) binary="enf.exe" ;;
 esac
 tmpdir="$(mktemp -d)"
-trap 'rm -rf "$tmpdir"' EXIT
+staged_path=""
+trap 'rm -rf "$tmpdir"; if [ -n "$staged_path" ]; then rm -f "$staged_path"; fi' EXIT
 
 case "$INSTALL_METHOD" in
   binary) ;;
@@ -170,10 +180,8 @@ if download "$url" "$tmpdir/$archive"; then
     install_from_cargo
     exit 0
   fi
-  mkdir -p "$INSTALL_DIR"
   tar -xzf "$tmpdir/$archive" -C "$tmpdir"
-  cp "$tmpdir/$binary" "$INSTALL_DIR/$binary"
-  chmod 755 "$INSTALL_DIR/$binary"
+  install_executable "$tmpdir/$binary"
   echo "installed $binary to $INSTALL_DIR/$binary"
   ensure_on_path
 else
