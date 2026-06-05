@@ -156,7 +156,6 @@ Search filters:
 - `--kind all|text|image`
 - `--filetype <ext>` repeatable, with or without a leading dot
 - `--path <glob>` repeatable
-- `--tag <tag>` repeatable and reserved for future indexed metadata tags
 
 ### Status / Doctor / CI
 
@@ -190,9 +189,12 @@ Optional endpoint-backed features are configured in `.enf.toml`:
   reranks filtered search candidates using a response array containing `index`
   and `score`.
 - `[image.embedding] enabled = true` with `endpoint = "http://host:41802/embed"`
-  embeds indexed images by sending raw base64 image strings. The current
-  compatible wrapper reports model `open_clip/ViT-H-14:laion2b_s32b_b79k`,
-  `dimensions = 1024`, and an `embeddings` vector list.
+  embeds indexed images by sending raw base64 image strings. These vectors are
+  stored for future compatible image search, but `search --kind image` currently
+  uses path/metadata matching until a text-to-image query embedding endpoint is
+  configured. The current compatible wrapper reports model
+  `open_clip/ViT-H-14:laion2b_s32b_b79k`, `dimensions = 1024`, and an
+  `embeddings` vector list.
 
 Per-command overrides (for `index`, `search`, `retrieve`):
 

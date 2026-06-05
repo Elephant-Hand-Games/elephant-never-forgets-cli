@@ -137,8 +137,6 @@ pub struct SearchArgs {
     pub filetypes: Vec<String>,
     #[arg(long = "path")]
     pub paths: Vec<String>,
-    #[arg(long = "tag")]
-    pub tags: Vec<String>,
     #[arg(long)]
     pub limit: Option<usize>,
     #[arg(long)]

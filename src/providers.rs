@@ -7,8 +7,7 @@ use base64::{engine::general_purpose::STANDARD, Engine as _};
 use reqwest::{
     blocking::Client,
     header::{AUTHORIZATION, CONTENT_TYPE},
-    StatusCode,
-    Url,
+    StatusCode, Url,
 };
 use serde::{Deserialize, Serialize};
 
@@ -73,7 +72,7 @@ pub struct ImageEmbeddingsResponse {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct RerankRequest {
     pub query: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub texts: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub documents: Option<Vec<String>>,
@@ -558,24 +557,22 @@ impl RerankerProvider {
         let response = self
             .client
             .post(&self.endpoint)
-            .json(&self.request_for_documents(query, texts.clone()))
+            .json(&self.request_for_texts(query, texts.clone()))
             .header(CONTENT_TYPE, "application/json")
             .send()
             .with_context(|| format!("posting rerank request to {}", self.endpoint))?;
         let status = response.status();
-        let raw_body = response
-            .bytes()
-            .context("reading rerank response body")?;
+        let raw_body = response.bytes().context("reading rerank response body")?;
         if status.is_success() {
             return self.parse_rerank(&raw_body);
         }
         if status == StatusCode::UNPROCESSABLE_ENTITY {
             let body = String::from_utf8_lossy(&raw_body);
-            if body.contains("\"documents\"") || body.contains("documents") {
+            if body.contains("\"texts\"") || body.contains("texts") {
                 let response = self
                     .client
                     .post(&self.endpoint)
-                    .json(&self.request_for_texts(query, texts))
+                    .json(&self.request_for_documents(query, texts))
                     .header(CONTENT_TYPE, "application/json")
                     .send()
                     .with_context(|| format!("posting rerank request to {}", self.endpoint))?
@@ -930,7 +927,8 @@ pub fn parse_image_embeddings(body: &[u8]) -> Result<ImageEmbeddingsResponse> {
 }
 
 pub fn parse_rerank_response(body: &[u8]) -> Result<Vec<RerankItem>> {
-    let legacy = serde_json::from_slice::<Vec<RerankItem>>(body).context("parsing reranker response");
+    let legacy =
+        serde_json::from_slice::<Vec<RerankItem>>(body).context("parsing reranker response");
     if let Ok(items) = legacy {
         return Ok(items);
     }

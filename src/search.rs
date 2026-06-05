@@ -100,8 +100,7 @@ pub fn run(args: SearchArgs, retrieve: bool) -> Result<()> {
             )?);
         }
         if mode != SearchMode::Keyword && config.image.embedding.enabled {
-            match image_vector_results(&conn, &config, &args.query, &normalized_query, limit, &mode)
-            {
+            match image_vector_results(&conn, &config, &args.query, limit, &mode) {
                 Ok(image_results) => results.extend(image_results),
                 Err(err) if args.kind == SearchKindArg::Image || mode == SearchMode::Vector => {
                     return Err(err);
@@ -553,16 +552,21 @@ fn query_images_by_path(
         "SELECT i.id, f.id, f.path, f.file_type
          FROM images i
          JOIN files f ON f.id = i.file_id
-         ORDER BY f.path",
+         WHERE lower(f.path) LIKE '%' || lower(?1) || '%'
+         ORDER BY f.path
+         LIMIT ?2",
     )?;
-    let rows = stmt.query_map([], |row| {
-        Ok((
-            row.get::<_, i64>(0)?,
-            row.get::<_, i64>(1)?,
-            row.get::<_, String>(2)?,
-            row.get::<_, String>(3)?,
-        ))
-    })?;
+    let rows = stmt.query_map(
+        rusqlite::params![query, limit.saturating_mul(8).max(limit) as i64],
+        |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+            ))
+        },
+    )?;
     let mut top = ranking::TopK::new(limit.saturating_mul(2).max(limit));
     for row in rows {
         let (image_id, file_id, path, file_type) = row?;
@@ -597,7 +601,6 @@ fn image_vector_results(
     conn: &rusqlite::Connection,
     config: &crate::config::Config,
     query: &str,
-    normalized_query: &str,
     limit: usize,
     mode: &SearchMode,
 ) -> Result<Vec<RankedResult>> {
@@ -620,54 +623,10 @@ fn image_vector_results(
     if !has_vectors {
         return Ok(Vec::new());
     }
-    let text_profile = crate::embed::active_profile(config);
-    let text_profile_id = crate::db::upsert_embedding_profile(conn, &text_profile)?;
-    let search = VectorSearch {
-        conn,
-        config,
-        profile_id: text_profile_id,
-        profile_hash: &text_profile.profile_hash,
-        query,
-        normalized_query,
-        cached_query_only: false,
-        limit,
-        mode,
-    };
-    let query_vector = query_vector(search)?;
-    let mut top = ranking::TopK::new(limit.saturating_mul(2).max(limit));
-    crate::db::stream_vector_images_for_profile(
-        conn,
-        image_profile_id,
-        config.search.batch_scan_size,
-        |rows| {
-            for row in rows {
-                let vector_score = ranking::cosine_similarity(&query_vector, &row.vector).max(0.0);
-                let metadata_score = ranking::keyword_score(query, &row.path);
-                let score = weighted_score(mode, config, vector_score, 0.0, metadata_score);
-                top.push(RankedResult {
-                    path: row.path.clone(),
-                    snippet: row.path.clone(),
-                    score,
-                    rerank_score: None,
-                    kind: "image".into(),
-                    file_type: row.file_type.clone(),
-                    file_id: Some(row.file_id),
-                    chunk_id: Some(row.image_id),
-                    chunk_index: None,
-                    start_line: None,
-                    end_line: None,
-                    keyword_score: 0.0,
-                    vector_score,
-                    metadata_score,
-                    profile_hash: crate::db::image_profile_hash_for_config(config),
-                    mode: mode_label(mode).into(),
-                    level: "image".into(),
-                });
-            }
-            Ok(())
-        },
-    )?;
-    Ok(top.into_sorted_vec())
+    let _ = (query, limit, mode);
+    anyhow::bail!(
+        "image vector search requires a compatible text-to-image query embedding endpoint, which is not configured"
+    )
 }
 
 fn snippet(text: &str, chars: usize) -> String {
@@ -745,10 +704,7 @@ fn maybe_rerank(
     let reranked = match provider.rerank(query, texts) {
         Ok(reranked) => reranked,
         Err(err) => {
-            warnings.push(format!(
-                "reranker disabled for this query: {}",
-                err
-            ));
+            warnings.push(format!("reranker disabled for this query: {}", err));
             return Ok(results);
         }
     };
@@ -879,5 +835,141 @@ fn mode_label(mode: &SearchMode) -> &'static str {
         SearchMode::Hybrid => "hybrid",
         SearchMode::Vector => "vector",
         SearchMode::Keyword => "keyword",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{
+        io::{Read, Write},
+        net::TcpListener,
+        thread,
+    };
+
+    fn result(path: &str, score: f32) -> RankedResult {
+        RankedResult {
+            path: path.into(),
+            snippet: format!("{path} snippet"),
+            score,
+            rerank_score: None,
+            kind: "chunk".into(),
+            file_type: "md".into(),
+            file_id: None,
+            chunk_id: None,
+            chunk_index: None,
+            start_line: None,
+            end_line: None,
+            keyword_score: score,
+            vector_score: 0.0,
+            metadata_score: 0.0,
+            profile_hash: "profile".into(),
+            mode: "keyword".into(),
+            level: "chunk".into(),
+        }
+    }
+
+    fn reranker_config(endpoint: String) -> crate::config::Config {
+        let mut config = crate::config::Config::default();
+        config.reranker.enabled = true;
+        config.reranker.endpoint = Some(endpoint);
+        config.reranker.candidate_limit = 3;
+        config
+    }
+
+    fn serve_once(
+        response_status: &str,
+        response_body: &'static str,
+    ) -> (String, thread::JoinHandle<String>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = format!("http://{}/rerank", listener.local_addr().unwrap());
+        let response_status = response_status.to_string();
+        let handle = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = Vec::new();
+            let mut buffer = [0u8; 1024];
+            loop {
+                let read = stream.read(&mut buffer).unwrap();
+                if read == 0 {
+                    break;
+                }
+                request.extend_from_slice(&buffer[..read]);
+                if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            let headers = String::from_utf8_lossy(&request);
+            let content_length = headers
+                .lines()
+                .find_map(|line| line.strip_prefix("content-length: "))
+                .or_else(|| {
+                    headers
+                        .lines()
+                        .find_map(|line| line.strip_prefix("Content-Length: "))
+                })
+                .and_then(|value| value.trim().parse::<usize>().ok())
+                .unwrap_or(0);
+            let body_start = request
+                .windows(4)
+                .position(|window| window == b"\r\n\r\n")
+                .map(|position| position + 4)
+                .unwrap_or(request.len());
+            while request.len().saturating_sub(body_start) < content_length {
+                let read = stream.read(&mut buffer).unwrap();
+                if read == 0 {
+                    break;
+                }
+                request.extend_from_slice(&buffer[..read]);
+            }
+            let response = format!(
+                "HTTP/1.1 {response_status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{response_body}",
+                response_body.len()
+            );
+            stream.write_all(response.as_bytes()).unwrap();
+            String::from_utf8_lossy(&request[body_start..]).to_string()
+        });
+        (endpoint, handle)
+    }
+
+    #[test]
+    fn rerank_reorders_results_and_ignores_duplicate_or_out_of_range_indices() {
+        let (endpoint, handle) = serve_once(
+            "200 OK",
+            r#"[{"index":1,"score":0.9},{"index":1,"score":0.8},{"index":99,"score":1.0}]"#,
+        );
+        let config = reranker_config(endpoint);
+        let mut warnings = Vec::new();
+        let results = vec![
+            result("first.md", 0.1),
+            result("second.md", 0.2),
+            result("third.md", 0.3),
+        ];
+
+        let reranked = maybe_rerank(&config, "query", results, &mut warnings).unwrap();
+        let request_body = handle.join().unwrap();
+
+        assert!(request_body.contains("\"texts\""));
+        assert!(!request_body.contains("\"documents\""));
+        assert!(warnings.is_empty());
+        assert_eq!(reranked[0].path, "second.md");
+        assert_eq!(reranked[0].rerank_score, Some(0.9));
+        assert_eq!(reranked[1].path, "first.md");
+        assert_eq!(reranked[2].path, "third.md");
+    }
+
+    #[test]
+    fn rerank_errors_warn_and_preserve_original_order() {
+        let (endpoint, handle) = serve_once("500 Internal Server Error", r#"{"error":"down"}"#);
+        let config = reranker_config(endpoint);
+        let mut warnings = Vec::new();
+        let results = vec![result("first.md", 0.1), result("second.md", 0.2)];
+
+        let reranked = maybe_rerank(&config, "query", results, &mut warnings).unwrap();
+        handle.join().unwrap();
+
+        assert_eq!(reranked[0].path, "first.md");
+        assert_eq!(reranked[1].path, "second.md");
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("reranker disabled for this query"));
     }
 }

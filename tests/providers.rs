@@ -8,7 +8,11 @@ use elephant_never_forgets::{
     },
 };
 use serde_json::json;
-use std::io::Write;
+use std::{
+    io::{Read, Write},
+    net::TcpListener,
+    thread,
+};
 
 fn base_config(provider: Provider) -> Config {
     let mut config = Config::default();
@@ -42,6 +46,63 @@ fn base_config(provider: Provider) -> Config {
     };
     config::validate(&config).unwrap();
     config
+}
+
+fn serve_reranker_fallback() -> (String, thread::JoinHandle<Vec<String>>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let endpoint = format!("http://{}/rerank", listener.local_addr().unwrap());
+    let handle = thread::spawn(move || {
+        let mut bodies = Vec::new();
+        for (status, body) in [
+            ("422 Unprocessable Entity", r#"{"detail":"texts rejected"}"#),
+            ("200 OK", r#"[{"index":0,"score":0.7}]"#),
+        ] {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = Vec::new();
+            let mut buffer = [0u8; 1024];
+            loop {
+                let read = stream.read(&mut buffer).unwrap();
+                if read == 0 {
+                    break;
+                }
+                request.extend_from_slice(&buffer[..read]);
+                if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            let headers = String::from_utf8_lossy(&request);
+            let content_length = headers
+                .lines()
+                .find_map(|line| line.strip_prefix("content-length: "))
+                .or_else(|| {
+                    headers
+                        .lines()
+                        .find_map(|line| line.strip_prefix("Content-Length: "))
+                })
+                .and_then(|value| value.trim().parse::<usize>().ok())
+                .unwrap_or(0);
+            let body_start = request
+                .windows(4)
+                .position(|window| window == b"\r\n\r\n")
+                .map(|position| position + 4)
+                .unwrap_or(request.len());
+            while request.len().saturating_sub(body_start) < content_length {
+                let read = stream.read(&mut buffer).unwrap();
+                if read == 0 {
+                    break;
+                }
+                request.extend_from_slice(&buffer[..read]);
+            }
+            bodies.push(String::from_utf8_lossy(&request[body_start..]).to_string());
+            let response = format!(
+                "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).unwrap();
+        }
+        bodies
+    });
+    (endpoint, handle)
 }
 
 #[test]
@@ -251,6 +312,19 @@ fn reranker_helpers_match_endpoint_shape() {
             "truncation_direction": "right",
         })
     );
+    let documents_payload =
+        provider.request_for_documents("deep learning", vec!["Deep learning text".into()]);
+    assert_eq!(
+        serde_json::to_value(documents_payload).unwrap(),
+        json!({
+            "query": "deep learning",
+            "documents": ["Deep learning text"],
+            "raw_scores": false,
+            "return_text": true,
+            "truncate": true,
+            "truncation_direction": "right",
+        })
+    );
 
     let parsed = parse_rerank_response(
         br#"[{"index":0,"score":0.98,"text":"Deep learning text"},{"index":1,"score":0.01}]"#,
@@ -259,6 +333,27 @@ fn reranker_helpers_match_endpoint_shape() {
     assert_eq!(parsed[0].index, 0);
     assert_eq!(parsed[0].score, 0.98);
     assert_eq!(parsed[1].text, None);
+}
+
+#[test]
+fn reranker_falls_back_to_documents_only_after_texts_422() {
+    let (endpoint, server) = serve_reranker_fallback();
+    let mut config = Config::default();
+    config.reranker.enabled = true;
+    config.reranker.endpoint = Some(endpoint);
+    let provider = RerankerProvider::from_config(&config).unwrap();
+
+    let reranked = provider
+        .rerank("deep learning", vec!["Deep learning text".into()])
+        .unwrap();
+    let bodies = server.join().unwrap();
+
+    assert_eq!(reranked[0].index, 0);
+    assert_eq!(reranked[0].score, 0.7);
+    assert!(bodies[0].contains("\"texts\""));
+    assert!(!bodies[0].contains("\"documents\""));
+    assert!(bodies[1].contains("\"documents\""));
+    assert!(!bodies[1].contains("\"texts\""));
 }
 
 #[test]

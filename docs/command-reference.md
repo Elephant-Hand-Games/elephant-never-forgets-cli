@@ -158,7 +158,7 @@ enf remove <path> [--dry-run]
 Run a query with default output (path list) or JSON output.
 
 ```text
-enf search <query> [--mode <mode>] [--level <level>] [--kind <kind>] [--filetype <ext>]... [--path <glob>]... [--tag <tag>]... [--limit <usize>] [--cached-query-only] [--provider <provider>] [--model <model>] [--variant <variant>] [--endpoint <url>] [--api-key-env <env-var>] [--dimensions <usize>] [--json]
+enf search <query> [--mode <mode>] [--level <level>] [--kind <kind>] [--filetype <ext>]... [--path <glob>]... [--limit <usize>] [--cached-query-only] [--provider <provider>] [--model <model>] [--variant <variant>] [--endpoint <url>] [--api-key-env <env-var>] [--dimensions <usize>] [--json]
 ```
 
 `retrieve` uses the same options as `search` and always prints JSON result payload.
@@ -171,7 +171,6 @@ Flags:
 - `--kind <kind>` where `<kind>` is `all`, `text`, or `image`
 - `--filetype <ext>` repeatable, matched case-insensitively without requiring a leading dot
 - `--path <glob>` repeatable path glob filter
-- `--tag <tag>` repeatable, currently reserved for future indexed metadata tags
 - `--limit <usize>`
 - `--cached-query-only`
 - `--json`
@@ -180,10 +179,12 @@ Flags:
 Notes:
 - When stored chunk embeddings exist for the active profile, search/retrieve use
   hybrid ranking over vector similarity, keyword score, and metadata score.
-- When `[image.embedding].enabled = true`, image vector hits can appear beside
-  text hits and are labeled with `kind = "image"`. Local images are sent to the
-  configured endpoint as raw base64 strings; the compatible port 41802 wrapper
-  returns `open_clip/ViT-H-14:laion2b_s32b_b79k` 1024-dimensional vectors.
+- When `[image.embedding].enabled = true`, local images are sent to the
+  configured endpoint as raw base64 strings and stored for future compatible
+  image search. Current `--kind image` search uses path/metadata matching; image
+  vector search is disabled until a text-to-image query embedding endpoint is
+  configured. The compatible port 41802 wrapper returns
+  `open_clip/ViT-H-14:laion2b_s32b_b79k` 1024-dimensional vectors.
 - Filters are applied before final top-k and before optional reranking.
 - When `[reranker].enabled = true`, filtered candidates are reranked by the
   configured `POST /rerank` endpoint.

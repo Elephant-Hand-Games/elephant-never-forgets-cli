@@ -195,7 +195,8 @@ pub fn index_path_with_options(
         discovered_paths.iter().cloned().collect::<Vec<_>>()
     };
     let embedded_chunks = maybe_embed_missing_chunks(&conn, config, embed_options, &reembed_paths)?;
-    let embedded_images = maybe_embed_missing_images(root, &conn, config, embed_options)?;
+    let embedded_images =
+        maybe_embed_missing_images(root, &conn, config, embed_options, &reembed_paths)?;
     if embedded_chunks > 0 {
         print_progress(
             embed_options,
@@ -312,6 +313,7 @@ fn maybe_embed_missing_images(
     conn: &rusqlite::Connection,
     config: &Config,
     embed_options: EmbedOptions,
+    reembed_paths: &[String],
 ) -> Result<usize> {
     if embed_options.no_embed || !config.image.embedding.enabled {
         return Ok(0);
@@ -330,6 +332,9 @@ fn maybe_embed_missing_images(
         config.image.embedding.dimensions,
         config.image.embedding.normalize,
     )?;
+    if embed_options.reembed {
+        delete_image_embeddings_for_paths(conn, profile_id, reembed_paths)?;
+    }
     let provider = providers::ImageEmbeddingProvider::from_config(config)?;
     let mut embedded = 0usize;
     loop {
@@ -349,6 +354,27 @@ fn maybe_embed_missing_images(
         }
     }
     Ok(embedded)
+}
+
+fn delete_image_embeddings_for_paths(
+    conn: &rusqlite::Connection,
+    profile_id: i64,
+    paths: &[String],
+) -> Result<()> {
+    for path in paths {
+        conn.execute(
+            "DELETE FROM image_embeddings
+             WHERE profile_id = ?1
+               AND image_id IN (
+                 SELECT i.id
+                 FROM images i
+                 JOIN files f ON f.id = i.file_id
+                 WHERE f.path = ?2
+               )",
+            params![profile_id, path],
+        )?;
+    }
+    Ok(())
 }
 
 fn delete_embeddings_for_paths(

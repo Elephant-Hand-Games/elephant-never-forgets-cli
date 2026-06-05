@@ -3,8 +3,16 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use elephant_never_forgets::{config::Config, db, discovery, embed, index};
+use elephant_never_forgets::{
+    config::{Config, Provider},
+    db, discovery, embed, index,
+};
 use rusqlite::Connection;
+use std::{
+    io::{Read, Write},
+    net::TcpListener,
+    thread,
+};
 
 fn write_file(root: &Path, relative: &str, contents: &str) {
     let path = root.join(relative);
@@ -25,6 +33,26 @@ fn test_config() -> Config {
 
 fn db_connection(root: &Path) -> Connection {
     Connection::open(root.join(".enf/index.sqlite")).unwrap()
+}
+
+fn serve_image_embeddings(vectors: Vec<&'static str>) -> (String, thread::JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let endpoint = format!("http://{}/embed", listener.local_addr().unwrap());
+    let handle = thread::spawn(move || {
+        for vector in vectors {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0u8; 2048];
+            let _ = stream.read(&mut request).unwrap();
+            let body =
+                format!(r#"{{"model":"test-image","dimensions":3,"embeddings":[{vector}]}}"#);
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).unwrap();
+        }
+    });
+    (endpoint, handle)
 }
 
 fn chunk_rows(root: &Path, path: &str) -> Vec<(i64, String, i64, i64, String)> {
@@ -385,4 +413,57 @@ fn index_honors_store_full_files_and_store_chunks_flags() {
 
     assert_eq!(content, None);
     assert_eq!(chunks, 0);
+}
+
+#[test]
+fn reembed_refreshes_existing_image_embeddings() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    fs::create_dir_all(root.join("assets")).unwrap();
+    fs::write(root.join("assets/logo.png"), b"fake png").unwrap();
+
+    let (endpoint, server) = serve_image_embeddings(vec!["[0.1,0.2,0.3]", "[0.9,0.8,0.7]"]);
+    let mut config = test_config();
+    config.embedding.provider = Provider::Http;
+    config.embedding.endpoint = Some("http://127.0.0.1:1/embed".into());
+    config.embedding.dimensions = 3;
+    config.image.embedding.enabled = true;
+    config.image.embedding.endpoint = Some(endpoint);
+    config.image.embedding.dimensions = 3;
+    config.image.embedding.batch_size = 1;
+
+    index::index_path(
+        root,
+        PathBuf::from("."),
+        &config,
+        index::EmbedOptions {
+            no_embed: false,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    index::index_path(
+        root,
+        PathBuf::from("."),
+        &config,
+        index::EmbedOptions {
+            no_embed: false,
+            reembed: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    server.join().unwrap();
+
+    let conn = db_connection(root);
+    let bytes: Vec<u8> = conn
+        .query_row("SELECT vector FROM image_embeddings LIMIT 1", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(
+        embed::deserialize_vector(&bytes).unwrap(),
+        vec![0.9, 0.8, 0.7]
+    );
 }
