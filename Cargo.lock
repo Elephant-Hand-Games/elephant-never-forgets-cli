@@ -750,6 +750,7 @@ dependencies = [
  "anyhow",
  "assert_cmd",
  "async-trait",
+ "base64 0.22.1",
  "blake3",
  "candle-core",
  "candle-nn",

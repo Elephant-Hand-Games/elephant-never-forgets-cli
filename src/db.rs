@@ -33,6 +33,21 @@ pub struct VectorChunkRow {
     pub vector: Vec<f32>,
 }
 
+#[derive(Debug, Clone)]
+pub struct ImageForEmbedding {
+    pub image_id: i64,
+    pub path: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct VectorImageRow {
+    pub image_id: i64,
+    pub file_id: i64,
+    pub path: String,
+    pub file_type: String,
+    pub vector: Vec<f32>,
+}
+
 const MIGRATIONS: &[&str] = &[
     r#"
 PRAGMA journal_mode = WAL;
@@ -126,6 +141,46 @@ CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
 "#,
     r#"
 ALTER TABLE files ADD COLUMN file_type TEXT NOT NULL DEFAULT '';
+"#,
+    r#"
+CREATE TABLE IF NOT EXISTS image_embedding_profiles (
+  id INTEGER PRIMARY KEY,
+  profile_hash TEXT NOT NULL UNIQUE,
+  model TEXT NOT NULL,
+  endpoint TEXT,
+  dimensions INTEGER NOT NULL,
+  normalize INTEGER NOT NULL,
+  serialization_version TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS images (
+  id INTEGER PRIMARY KEY,
+  file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+  width INTEGER,
+  height INTEGER,
+  created_at TEXT NOT NULL,
+  UNIQUE(file_id)
+);
+
+CREATE TABLE IF NOT EXISTS image_embeddings (
+  id INTEGER PRIMARY KEY,
+  profile_id INTEGER NOT NULL REFERENCES image_embedding_profiles(id) ON DELETE CASCADE,
+  image_id INTEGER NOT NULL REFERENCES images(id) ON DELETE CASCADE,
+  vector BLOB NOT NULL,
+  created_at TEXT NOT NULL,
+  UNIQUE(profile_id, image_id)
+);
+
+CREATE TABLE IF NOT EXISTS image_query_embeddings (
+  id INTEGER PRIMARY KEY,
+  profile_id INTEGER NOT NULL REFERENCES image_embedding_profiles(id) ON DELETE CASCADE,
+  normalized_query TEXT NOT NULL,
+  vector BLOB NOT NULL,
+  created_at TEXT NOT NULL,
+  last_used_at TEXT NOT NULL,
+  UNIQUE(profile_id, normalized_query)
+);
 "#,
 ];
 
@@ -449,4 +504,237 @@ where
 {
     let profile_id = upsert_active_embedding_profile(conn, config)?;
     stream_vector_chunks_for_profile(conn, profile_id, batch_size, on_batch)
+}
+
+pub fn upsert_image_profile(
+    conn: &Connection,
+    model: &str,
+    endpoint: Option<&str>,
+    dimensions: usize,
+    normalize: bool,
+) -> Result<i64> {
+    let profile_hash = image_profile_hash(model, endpoint, dimensions, normalize);
+    conn.execute(
+        "INSERT INTO image_embedding_profiles (
+            profile_hash, model, endpoint, dimensions, normalize, serialization_version, created_at
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now'))
+         ON CONFLICT(profile_hash) DO UPDATE SET profile_hash = excluded.profile_hash",
+        params![
+            profile_hash,
+            model,
+            endpoint,
+            dimensions as i64,
+            if normalize { 1 } else { 0 },
+            crate::embed::EMBEDDING_SERIALIZATION_VERSION,
+        ],
+    )?;
+    Ok(conn.query_row(
+        "SELECT id FROM image_embedding_profiles WHERE profile_hash = ?1",
+        [profile_hash],
+        |row| row.get(0),
+    )?)
+}
+
+pub fn image_profile_hash(
+    model: &str,
+    endpoint: Option<&str>,
+    dimensions: usize,
+    normalize: bool,
+) -> String {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"image-profile\0");
+    hasher.update(model.as_bytes());
+    hasher.update(&[0]);
+    hasher.update(endpoint.unwrap_or("").as_bytes());
+    hasher.update(&[0]);
+    hasher.update(dimensions.to_string().as_bytes());
+    hasher.update(&[0]);
+    hasher.update(if normalize { b"1" } else { b"0" });
+    hasher.update(&[0]);
+    hasher.update(crate::embed::EMBEDDING_SERIALIZATION_VERSION.as_bytes());
+    hasher.finalize().to_hex().to_string()
+}
+
+pub fn image_profile_hash_for_config(config: &Config) -> String {
+    image_profile_hash(
+        &config.image.embedding.model,
+        config.image.embedding.endpoint.as_deref(),
+        config.image.embedding.dimensions,
+        config.image.embedding.normalize,
+    )
+}
+
+pub fn upsert_image_record(conn: &Connection, file_id: i64) -> Result<i64> {
+    conn.execute(
+        "INSERT INTO images(file_id, created_at)
+         VALUES (?1, datetime('now'))
+         ON CONFLICT(file_id) DO UPDATE SET file_id = excluded.file_id",
+        [file_id],
+    )?;
+    Ok(conn.query_row(
+        "SELECT id FROM images WHERE file_id = ?1",
+        [file_id],
+        |row| row.get(0),
+    )?)
+}
+
+pub fn images_missing_embeddings(
+    conn: &Connection,
+    profile_id: i64,
+    limit: usize,
+) -> Result<Vec<ImageForEmbedding>> {
+    let mut stmt = conn.prepare(
+        "SELECT i.id, f.path
+         FROM images i
+         JOIN files f ON f.id = i.file_id
+         LEFT JOIN image_embeddings e ON e.image_id = i.id AND e.profile_id = ?1
+         WHERE e.id IS NULL
+         ORDER BY i.id
+         LIMIT ?2",
+    )?;
+    let rows = stmt.query_map(params![profile_id, limit as i64], |row| {
+        Ok(ImageForEmbedding {
+            image_id: row.get(0)?,
+            path: row.get(1)?,
+        })
+    })?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+}
+
+pub fn upsert_image_embedding(
+    conn: &Connection,
+    profile_id: i64,
+    image_id: i64,
+    vector: &[f32],
+) -> Result<()> {
+    validate_image_vector_dimensions(conn, profile_id, vector)?;
+    conn.execute(
+        "INSERT INTO image_embeddings(profile_id, image_id, vector, created_at)
+         VALUES (?1, ?2, ?3, datetime('now'))
+         ON CONFLICT(profile_id, image_id)
+         DO UPDATE SET vector = excluded.vector, created_at = excluded.created_at",
+        params![profile_id, image_id, serialize_vector(vector)],
+    )?;
+    Ok(())
+}
+
+pub fn image_query_embedding(
+    conn: &Connection,
+    profile_id: i64,
+    normalized_query: &str,
+) -> Result<Option<Vec<f32>>> {
+    let bytes: Option<Vec<u8>> = conn
+        .query_row(
+            "SELECT vector FROM image_query_embeddings WHERE profile_id = ?1 AND normalized_query = ?2",
+            params![profile_id, normalized_query],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if bytes.is_some() {
+        conn.execute(
+            "UPDATE image_query_embeddings SET last_used_at = datetime('now') WHERE profile_id = ?1 AND normalized_query = ?2",
+            params![profile_id, normalized_query],
+        )?;
+    }
+    bytes.map(|bytes| deserialize_vector(&bytes)).transpose()
+}
+
+pub fn upsert_image_query_embedding(
+    conn: &Connection,
+    profile_id: i64,
+    normalized_query: &str,
+    vector: &[f32],
+) -> Result<()> {
+    validate_image_vector_dimensions(conn, profile_id, vector)?;
+    conn.execute(
+        "INSERT INTO image_query_embeddings(profile_id, normalized_query, vector, created_at, last_used_at)
+         VALUES (?1, ?2, ?3, datetime('now'), datetime('now'))
+         ON CONFLICT(profile_id, normalized_query)
+         DO UPDATE SET vector = excluded.vector, last_used_at = excluded.last_used_at",
+        params![profile_id, normalized_query, serialize_vector(vector)],
+    )?;
+    Ok(())
+}
+
+pub fn vector_images_for_profile(
+    conn: &Connection,
+    profile_id: i64,
+    limit: usize,
+    offset: usize,
+) -> Result<Vec<VectorImageRow>> {
+    let mut stmt = conn.prepare(
+        "SELECT i.id, f.id, f.path, f.file_type, e.vector
+         FROM image_embeddings e
+         JOIN images i ON i.id = e.image_id
+         JOIN files f ON f.id = i.file_id
+         WHERE e.profile_id = ?1
+         ORDER BY i.id
+         LIMIT ?2 OFFSET ?3",
+    )?;
+    let rows = stmt.query_map(params![profile_id, limit as i64, offset as i64], |row| {
+        Ok((
+            row.get::<_, i64>(0)?,
+            row.get::<_, i64>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, String>(3)?,
+            row.get::<_, Vec<u8>>(4)?,
+        ))
+    })?;
+    let mut results = Vec::new();
+    for row in rows {
+        let (image_id, file_id, path, file_type, bytes) = row?;
+        results.push(VectorImageRow {
+            image_id,
+            file_id,
+            path,
+            file_type,
+            vector: deserialize_vector(&bytes)?,
+        });
+    }
+    Ok(results)
+}
+
+pub fn stream_vector_images_for_profile<F>(
+    conn: &Connection,
+    profile_id: i64,
+    batch_size: usize,
+    mut on_batch: F,
+) -> Result<()>
+where
+    F: FnMut(&[VectorImageRow]) -> Result<()>,
+{
+    if batch_size == 0 {
+        anyhow::bail!("batch_size must be greater than 0");
+    }
+    let mut offset = 0usize;
+    loop {
+        let rows = vector_images_for_profile(conn, profile_id, batch_size, offset)?;
+        if rows.is_empty() {
+            break;
+        }
+        offset += rows.len();
+        on_batch(&rows)?;
+    }
+    Ok(())
+}
+
+fn validate_image_vector_dimensions(
+    conn: &Connection,
+    profile_id: i64,
+    vector: &[f32],
+) -> Result<()> {
+    let expected: i64 = conn.query_row(
+        "SELECT dimensions FROM image_embedding_profiles WHERE id = ?1",
+        [profile_id],
+        |row| row.get(0),
+    )?;
+    if vector.len() != expected as usize {
+        anyhow::bail!(
+            "image embedding vector has {} dimensions; expected {} for profile {}",
+            vector.len(),
+            expected,
+            profile_id
+        );
+    }
+    Ok(())
 }

@@ -13,7 +13,9 @@ use serde::Serialize;
 use crate::{
     cli::{IndexArgs, RemoveArgs},
     config::{Config, Provider},
-    db, discovery, extract, models, providers,
+    db,
+    discovery::{self, DiscoveredFileKind},
+    extract, models, providers,
 };
 
 pub fn run(args: IndexArgs) -> Result<()> {
@@ -84,6 +86,7 @@ pub struct IndexSummary {
     pub discovered_files: usize,
     pub changed_files: usize,
     pub embedded_chunks: usize,
+    pub embedded_images: usize,
     pub reembedded: bool,
     pub changed_only: bool,
     pub no_embed: bool,
@@ -191,15 +194,27 @@ pub fn index_path_with_options(
     } else {
         discovered_paths.iter().cloned().collect::<Vec<_>>()
     };
-    let embedded = maybe_embed_missing_chunks(&conn, config, embed_options, &reembed_paths)?;
-    if embedded > 0 {
-        print_progress(embed_options, format_args!("✓ Embedded {embedded} chunks"));
+    let embedded_chunks = maybe_embed_missing_chunks(&conn, config, embed_options, &reembed_paths)?;
+    let embedded_images =
+        maybe_embed_missing_images(root, &conn, config, embed_options, &reembed_paths)?;
+    if embedded_chunks > 0 {
+        print_progress(
+            embed_options,
+            format_args!("✓ Embedded {embedded_chunks} chunks"),
+        );
+    }
+    if embedded_images > 0 {
+        print_progress(
+            embed_options,
+            format_args!("✓ Embedded {embedded_images} images"),
+        );
     }
     Ok(IndexSummary {
         path: display_index_path(&path),
         discovered_files: discovered_count,
         changed_files: changed,
-        embedded_chunks: embedded,
+        embedded_chunks,
+        embedded_images,
         reembedded: embed_options.reembed,
         changed_only: embed_options.changed_only,
         no_embed: embed_options.no_embed,
@@ -291,6 +306,75 @@ fn maybe_embed_missing_chunks(
     }
 
     Ok(embedded)
+}
+
+fn maybe_embed_missing_images(
+    root: &Path,
+    conn: &rusqlite::Connection,
+    config: &Config,
+    embed_options: EmbedOptions,
+    reembed_paths: &[String],
+) -> Result<usize> {
+    if embed_options.no_embed || !config.image.embedding.enabled {
+        return Ok(0);
+    }
+    let endpoint = config
+        .image
+        .embedding
+        .endpoint
+        .as_deref()
+        .filter(|endpoint| !endpoint.trim().is_empty())
+        .context("image.embedding.endpoint is required when image embeddings are enabled")?;
+    let profile_id = db::upsert_image_profile(
+        conn,
+        &config.image.embedding.model,
+        Some(endpoint),
+        config.image.embedding.dimensions,
+        config.image.embedding.normalize,
+    )?;
+    if embed_options.reembed {
+        delete_image_embeddings_for_paths(conn, profile_id, reembed_paths)?;
+    }
+    let provider = providers::ImageEmbeddingProvider::from_config(config)?;
+    let mut embedded = 0usize;
+    loop {
+        let images =
+            db::images_missing_embeddings(conn, profile_id, config.image.embedding.batch_size)?;
+        if images.is_empty() {
+            break;
+        }
+        let paths = images
+            .iter()
+            .map(|image| image.path.clone())
+            .collect::<Vec<_>>();
+        let vectors = provider.embed_image_files(root, &paths)?;
+        for (image, vector) in images.iter().zip(vectors.iter()) {
+            db::upsert_image_embedding(conn, profile_id, image.image_id, vector)?;
+            embedded += 1;
+        }
+    }
+    Ok(embedded)
+}
+
+fn delete_image_embeddings_for_paths(
+    conn: &rusqlite::Connection,
+    profile_id: i64,
+    paths: &[String],
+) -> Result<()> {
+    for path in paths {
+        conn.execute(
+            "DELETE FROM image_embeddings
+             WHERE profile_id = ?1
+               AND image_id IN (
+                 SELECT i.id
+                 FROM images i
+                 JOIN files f ON f.id = i.file_id
+                 WHERE f.path = ?2
+               )",
+            params![profile_id, path],
+        )?;
+    }
+    Ok(())
 }
 
 fn delete_embeddings_for_paths(
@@ -391,6 +475,17 @@ fn sync_file(
     file: &discovery::DiscoveredFile,
     config: &Config,
 ) -> Result<usize> {
+    if file.kind == DiscoveredFileKind::Image {
+        return sync_image_file(tx, file);
+    }
+    sync_text_file(tx, file, config)
+}
+
+fn sync_text_file(
+    tx: &Transaction<'_>,
+    file: &discovery::DiscoveredFile,
+    config: &Config,
+) -> Result<usize> {
     let extracted = extract::extract_text(&file.absolute_path)
         .with_context(|| format!("extracting {}", file.absolute_path.display()))?;
     let file_hash = blake3::hash(extracted.text.as_bytes()).to_hex().to_string();
@@ -457,6 +552,66 @@ fn sync_file(
     )?;
     let file_id = tx.last_insert_rowid();
     insert_chunks(tx, file_id, &file.relative_path, &extracted.text, config)?;
+    Ok(1)
+}
+
+fn sync_image_file(tx: &Transaction<'_>, file: &discovery::DiscoveredFile) -> Result<usize> {
+    let bytes = fs::read(&file.absolute_path)
+        .with_context(|| format!("reading image {}", file.absolute_path.display()))?;
+    let file_hash = blake3::hash(&bytes).to_hex().to_string();
+    let metadata = fs::metadata(&file.absolute_path)
+        .with_context(|| format!("reading metadata for {}", file.absolute_path.display()))?;
+    let size_bytes = metadata.len() as i64;
+    let modified_at = metadata
+        .modified()
+        .ok()
+        .map(|time| DateTime::<Utc>::from(time).to_rfc3339());
+    let file_type = file_type(&file.relative_path);
+
+    if let Some(existing) = load_file(tx, &file.relative_path)? {
+        if existing.hash == file_hash
+            && existing.size_bytes == size_bytes
+            && existing.file_type == file_type
+            && existing.modified_at == modified_at
+            && existing.content.is_none()
+        {
+            db::upsert_image_record(tx, existing.id)?;
+            if file_has_chunks(tx, existing.id)? {
+                delete_chunks(tx, existing.id, &file.relative_path)?;
+                return Ok(1);
+            }
+            return Ok(0);
+        }
+        replace_indexed_file(
+            tx,
+            existing.id,
+            FileUpdate {
+                path: &file.relative_path,
+                file_type: &file_type,
+                hash: &file_hash,
+                size_bytes,
+                modified_at: modified_at.as_deref(),
+                content: None,
+            },
+        )?;
+        delete_chunks(tx, existing.id, &file.relative_path)?;
+        db::upsert_image_record(tx, existing.id)?;
+        return Ok(1);
+    }
+
+    tx.execute(
+        "INSERT INTO files(path, file_type, hash, size_bytes, modified_at, indexed_at, content)
+         VALUES (?1, ?2, ?3, ?4, ?5, datetime('now'), NULL)",
+        params![
+            file.relative_path,
+            file_type,
+            file_hash,
+            size_bytes,
+            modified_at.as_deref(),
+        ],
+    )?;
+    let file_id = tx.last_insert_rowid();
+    db::upsert_image_record(tx, file_id)?;
     Ok(1)
 }
 

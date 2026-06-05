@@ -1,12 +1,13 @@
-use std::{env, time::Duration};
+use std::{env, path::Path, time::Duration};
 
 #[cfg(feature = "native-candle")]
 use crate::native_candle::NomicV15CandleEmbedding;
 use anyhow::{Context, Result};
+use base64::{engine::general_purpose::STANDARD, Engine as _};
 use reqwest::{
     blocking::Client,
     header::{AUTHORIZATION, CONTENT_TYPE},
-    Url,
+    StatusCode, Url,
 };
 use serde::{Deserialize, Serialize};
 
@@ -53,6 +54,53 @@ pub struct OllamaEmbedRequest {
 pub struct OpenAiEmbeddingsRequest {
     pub model: String,
     pub input: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ImageEmbeddingsRequest {
+    pub images: Vec<String>,
+    pub normalize: bool,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+pub struct ImageEmbeddingsResponse {
+    pub model: String,
+    pub dimensions: usize,
+    pub embeddings: Vec<Vec<f32>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RerankRequest {
+    pub query: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub texts: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub documents: Option<Vec<String>>,
+    pub raw_scores: bool,
+    pub return_text: bool,
+    pub truncate: bool,
+    pub truncation_direction: String,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+pub struct RerankItem {
+    pub index: usize,
+    pub score: f32,
+    pub text: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+struct RerankResponse {
+    results: Vec<RerankLegacyItem>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+struct RerankLegacyItem {
+    index: usize,
+    #[serde(rename = "relevance_score")]
+    score: f32,
+    #[serde(rename = "document", default)]
+    text: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]
@@ -113,6 +161,23 @@ pub struct HttpProvider {
     dimensions: usize,
     document_prefix: String,
     query_prefix: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct ImageEmbeddingProvider {
+    client: Client,
+    endpoint: String,
+    normalize: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct RerankerProvider {
+    client: Client,
+    endpoint: String,
+    raw_scores: bool,
+    return_text: bool,
+    truncate: bool,
+    truncation_direction: String,
 }
 
 impl NativeCandleProvider {
@@ -375,6 +440,154 @@ impl HttpProvider {
             );
         }
         Ok(embeddings)
+    }
+}
+
+impl ImageEmbeddingProvider {
+    pub fn from_config(config: &Config) -> Result<Self> {
+        let endpoint = config
+            .image
+            .embedding
+            .endpoint
+            .as_deref()
+            .filter(|endpoint| !endpoint.trim().is_empty())
+            .context("image embedding endpoint is required")?;
+        validate_endpoint(endpoint, "image embedding")?;
+        Ok(Self {
+            client: embedding_client()?,
+            endpoint: endpoint.to_string(),
+            normalize: config.image.embedding.normalize,
+        })
+    }
+
+    pub fn request_for_images(&self, images: Vec<String>) -> ImageEmbeddingsRequest {
+        ImageEmbeddingsRequest {
+            images,
+            normalize: self.normalize,
+        }
+    }
+
+    pub fn parse_embeddings(&self, body: &[u8]) -> Result<ImageEmbeddingsResponse> {
+        parse_image_embeddings(body)
+    }
+
+    pub fn embed_image_files(
+        &self,
+        root: &Path,
+        relative_paths: &[String],
+    ) -> Result<Vec<Vec<f32>>> {
+        let images = relative_paths
+            .iter()
+            .map(|path| image_base64(&root.join(path)))
+            .collect::<Result<Vec<_>>>()?;
+        let response = self
+            .client
+            .post(&self.endpoint)
+            .json(&self.request_for_images(images))
+            .header(CONTENT_TYPE, "application/json")
+            .send()
+            .with_context(|| format!("posting image embedding request to {}", self.endpoint))?
+            .error_for_status()
+            .with_context(|| format!("image embedding request failed for {}", self.endpoint))?
+            .bytes()
+            .context("reading image embedding response body")?;
+        let parsed = self.parse_embeddings(&response)?;
+        if parsed.embeddings.len() != relative_paths.len() {
+            anyhow::bail!(
+                "image embedding response returned {} vectors for {} images",
+                parsed.embeddings.len(),
+                relative_paths.len()
+            );
+        }
+        Ok(parsed.embeddings)
+    }
+}
+
+impl RerankerProvider {
+    pub fn from_config(config: &Config) -> Result<Self> {
+        let endpoint = config
+            .reranker
+            .endpoint
+            .as_deref()
+            .filter(|endpoint| !endpoint.trim().is_empty())
+            .context("reranker endpoint is required")?;
+        validate_endpoint(endpoint, "reranker")?;
+        Ok(Self {
+            client: Client::builder()
+                .timeout(Duration::from_secs(config.reranker.timeout_seconds))
+                .build()
+                .context("building reranker HTTP client")?,
+            endpoint: endpoint.to_string(),
+            raw_scores: config.reranker.raw_scores,
+            return_text: config.reranker.return_text,
+            truncate: config.reranker.truncate,
+            truncation_direction: config.reranker.truncation_direction.clone(),
+        })
+    }
+
+    pub fn request_for_texts(&self, query: &str, texts: Vec<String>) -> RerankRequest {
+        RerankRequest {
+            query: query.to_string(),
+            texts,
+            documents: None,
+            raw_scores: self.raw_scores,
+            return_text: self.return_text,
+            truncate: self.truncate,
+            truncation_direction: self.truncation_direction.clone(),
+        }
+    }
+
+    pub fn request_for_documents(&self, query: &str, documents: Vec<String>) -> RerankRequest {
+        RerankRequest {
+            query: query.to_string(),
+            texts: Vec::new(),
+            documents: Some(documents),
+            raw_scores: self.raw_scores,
+            return_text: self.return_text,
+            truncate: self.truncate,
+            truncation_direction: self.truncation_direction.clone(),
+        }
+    }
+
+    pub fn parse_rerank(&self, body: &[u8]) -> Result<Vec<RerankItem>> {
+        parse_rerank_response(body)
+    }
+
+    pub fn rerank(&self, query: &str, texts: Vec<String>) -> Result<Vec<RerankItem>> {
+        let response = self
+            .client
+            .post(&self.endpoint)
+            .json(&self.request_for_texts(query, texts.clone()))
+            .header(CONTENT_TYPE, "application/json")
+            .send()
+            .with_context(|| format!("posting rerank request to {}", self.endpoint))?;
+        let status = response.status();
+        let raw_body = response.bytes().context("reading rerank response body")?;
+        if status.is_success() {
+            return self.parse_rerank(&raw_body);
+        }
+        if status == StatusCode::UNPROCESSABLE_ENTITY {
+            let body = String::from_utf8_lossy(&raw_body);
+            if body.contains("\"texts\"") || body.contains("texts") {
+                let response = self
+                    .client
+                    .post(&self.endpoint)
+                    .json(&self.request_for_documents(query, texts))
+                    .header(CONTENT_TYPE, "application/json")
+                    .send()
+                    .with_context(|| format!("posting rerank request to {}", self.endpoint))?
+                    .error_for_status()
+                    .with_context(|| format!("rerank request failed for {}", self.endpoint))?
+                    .bytes()
+                    .context("reading rerank response body")?;
+                return self.parse_rerank(&response);
+            }
+        }
+        anyhow::bail!(
+            "rerank request failed for {}: {}",
+            self.endpoint,
+            String::from_utf8_lossy(&raw_body)
+        )
     }
 }
 
@@ -702,6 +915,39 @@ pub fn parse_openai_embeddings(body: &[u8]) -> Result<Vec<Vec<f32>>> {
             embedding.with_context(|| format!("openai embedding response missing index {}", index))
         })
         .collect()
+}
+
+pub fn parse_image_embeddings(body: &[u8]) -> Result<ImageEmbeddingsResponse> {
+    let response: ImageEmbeddingsResponse =
+        serde_json::from_slice(body).context("parsing image embedding response")?;
+    if response.dimensions == 0 {
+        anyhow::bail!("image embedding response dimensions must be greater than 0");
+    }
+    Ok(response)
+}
+
+pub fn parse_rerank_response(body: &[u8]) -> Result<Vec<RerankItem>> {
+    let legacy =
+        serde_json::from_slice::<Vec<RerankItem>>(body).context("parsing reranker response");
+    if let Ok(items) = legacy {
+        return Ok(items);
+    }
+    let wrapped: RerankResponse =
+        serde_json::from_slice(body).context("parsing reranker response")?;
+    Ok(wrapped
+        .results
+        .into_iter()
+        .map(|item| RerankItem {
+            index: item.index,
+            score: item.score,
+            text: item.text,
+        })
+        .collect())
+}
+
+fn image_base64(path: &Path) -> Result<String> {
+    let bytes = std::fs::read(path).with_context(|| format!("reading image {}", path.display()))?;
+    Ok(STANDARD.encode(bytes))
 }
 
 pub fn openai_request_payload(model: &str, texts: &[String]) -> OpenAiEmbeddingsRequest {

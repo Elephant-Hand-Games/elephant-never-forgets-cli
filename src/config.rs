@@ -24,7 +24,15 @@ pub struct Config {
     pub embedding: EmbeddingConfig,
     pub search: SearchConfig,
     pub index: IndexConfig,
+    #[serde(default)]
+    pub text: TextConfig,
+    #[serde(default)]
+    pub image: ImageConfig,
+    #[serde(default)]
+    pub reranker: RerankerConfig,
+    #[serde(default, skip_serializing_if = "PatternConfig::is_empty")]
     pub include: PatternConfig,
+    #[serde(default, skip_serializing_if = "PatternConfig::is_empty")]
     pub exclude: PatternConfig,
 }
 
@@ -115,9 +123,109 @@ pub struct IndexConfig {
     pub store_chunks: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct PatternConfig {
     pub patterns: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TextConfig {
+    pub include: PatternConfig,
+    pub exclude: PatternConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ImageConfig {
+    pub include: PatternConfig,
+    pub exclude: PatternConfig,
+    pub embedding: ImageEmbeddingConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "kebab-case")]
+pub struct ImageEmbeddingConfig {
+    pub enabled: bool,
+    pub endpoint: Option<String>,
+    pub model: String,
+    pub dimensions: usize,
+    pub batch_size: usize,
+    pub normalize: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "kebab-case")]
+pub struct RerankerConfig {
+    pub enabled: bool,
+    pub endpoint: Option<String>,
+    pub model: String,
+    pub candidate_limit: usize,
+    pub timeout_seconds: u64,
+    pub raw_scores: bool,
+    pub return_text: bool,
+    pub truncate: bool,
+    pub truncation_direction: String,
+}
+
+impl PatternConfig {
+    pub fn is_empty(&self) -> bool {
+        self.patterns.is_empty()
+    }
+}
+
+impl Default for TextConfig {
+    fn default() -> Self {
+        Self {
+            include: PatternConfig {
+                patterns: default_text_include_patterns(),
+            },
+            exclude: PatternConfig {
+                patterns: default_exclude_patterns(),
+            },
+        }
+    }
+}
+
+impl Default for ImageConfig {
+    fn default() -> Self {
+        Self {
+            include: PatternConfig {
+                patterns: default_image_include_patterns(),
+            },
+            exclude: PatternConfig {
+                patterns: default_exclude_patterns(),
+            },
+            embedding: ImageEmbeddingConfig::default(),
+        }
+    }
+}
+
+impl Default for ImageEmbeddingConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            endpoint: None,
+            model: "open_clip/ViT-H-14:laion2b_s32b_b79k".into(),
+            dimensions: 1024,
+            batch_size: 16,
+            normalize: true,
+        }
+    }
+}
+
+impl Default for RerankerConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            endpoint: None,
+            model: "BAAI/bge-reranker-v2-m3".into(),
+            candidate_limit: 50,
+            timeout_seconds: 30,
+            raw_scores: false,
+            return_text: true,
+            truncate: true,
+            truncation_direction: "right".into(),
+        }
+    }
 }
 
 impl Default for Config {
@@ -162,45 +270,68 @@ impl Default for Config {
                 store_full_files: true,
                 store_chunks: true,
             },
-            include: PatternConfig {
-                patterns: vec![
-                    "AGENTS.md",
-                    "README*",
-                    "CHANGELOG*",
-                    "CONTRIBUTING*",
-                    "docs/**",
-                    "**/*.md",
-                    "**/*.mdx",
-                    "**/*.txt",
-                    "**/*.rst",
-                    "**/*.adoc",
-                    "**/*.org",
-                    "**/*.ehmeta",
-                    "**/*.docx",
-                ]
-                .into_iter()
-                .map(String::from)
-                .collect(),
-            },
-            exclude: PatternConfig {
-                patterns: vec![
-                    ".git/**",
-                    ".enf/**",
-                    "node_modules/**",
-                    "dist/**",
-                    "build/**",
-                    "target/**",
-                    ".next/**",
-                    ".venv/**",
-                    "__pycache__/**",
-                    "*.lock",
-                ]
-                .into_iter()
-                .map(String::from)
-                .collect(),
-            },
+            text: TextConfig::default(),
+            image: ImageConfig::default(),
+            reranker: RerankerConfig::default(),
+            include: PatternConfig::default(),
+            exclude: PatternConfig::default(),
         }
     }
+}
+
+fn default_text_include_patterns() -> Vec<String> {
+    vec![
+        "AGENTS.md",
+        "README*",
+        "CHANGELOG*",
+        "CONTRIBUTING*",
+        "docs/**",
+        "**/*.md",
+        "**/*.mdx",
+        "**/*.txt",
+        "**/*.rst",
+        "**/*.adoc",
+        "**/*.org",
+        "**/*.ehmeta",
+        "**/*.docx",
+    ]
+    .into_iter()
+    .map(String::from)
+    .collect()
+}
+
+fn default_image_include_patterns() -> Vec<String> {
+    vec![
+        "**/*.png",
+        "**/*.jpg",
+        "**/*.jpeg",
+        "**/*.webp",
+        "**/*.gif",
+        "**/*.bmp",
+        "**/*.tif",
+        "**/*.tiff",
+    ]
+    .into_iter()
+    .map(String::from)
+    .collect()
+}
+
+fn default_exclude_patterns() -> Vec<String> {
+    vec![
+        ".git/**",
+        ".enf/**",
+        "node_modules/**",
+        "dist/**",
+        "build/**",
+        "target/**",
+        ".next/**",
+        ".venv/**",
+        "__pycache__/**",
+        "*.lock",
+    ]
+    .into_iter()
+    .map(String::from)
+    .collect()
 }
 
 pub fn init(args: InitArgs) -> Result<()> {
@@ -313,8 +444,9 @@ pub fn load() -> Result<Config> {
         return Err(EnfError::NotInitialized.into());
     }
     let text = fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
-    let config: Config =
+    let mut config: Config =
         toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
+    apply_legacy_pattern_compat(&mut config);
     validate(&config)?;
     Ok(config)
 }
@@ -332,7 +464,8 @@ fn format_config(config: &Config) -> Result<String> {
          #   enf init --db=sqlite --provider native --model nomic-embed-text-v1.5 --variant quantized\n\
          # Native projects use Candle locally. Remote providers can override provider/model/endpoint/api_key_env.\n\
          # state.db_path is the project SQLite index; state.model_cache controls where native model assets are cached.\n\
-         # index settings control text extraction/chunking. search weights control hybrid ranking.\n\n\
+         # text/image include settings control discoverable file types. search weights control hybrid ranking.\n\
+         # Reranking and image embeddings are optional endpoint-backed features.\n\n\
          {text}"
     ))
 }
@@ -345,7 +478,22 @@ pub fn validate(config: &Config) -> Result<()> {
     validate_search(config)?;
     validate_index(config)?;
     validate_embedding(config)?;
+    validate_image(config)?;
+    validate_reranker(config)?;
     Ok(())
+}
+
+fn apply_legacy_pattern_compat(config: &mut Config) {
+    if !config.include.patterns.is_empty()
+        && config.text.include.patterns == default_text_include_patterns()
+    {
+        config.text.include = config.include.clone();
+    }
+    if !config.exclude.patterns.is_empty()
+        && config.text.exclude.patterns == default_exclude_patterns()
+    {
+        config.text.exclude = config.exclude.clone();
+    }
 }
 
 fn validate_state(config: &Config) -> Result<()> {
@@ -513,6 +661,49 @@ fn validate_embedding(config: &Config) -> Result<()> {
         Provider::OpenaiCompatible | Provider::Http => {}
     }
 
+    Ok(())
+}
+
+fn validate_image(config: &Config) -> Result<()> {
+    if config.image.embedding.dimensions == 0 {
+        anyhow::bail!("image.embedding.dimensions must be greater than 0");
+    }
+    if config.image.embedding.batch_size == 0 {
+        anyhow::bail!("image.embedding.batch_size must be greater than 0");
+    }
+    if config.image.embedding.enabled
+        && config
+            .image
+            .embedding
+            .endpoint
+            .as_deref()
+            .map(str::trim)
+            .filter(|endpoint| !endpoint.is_empty())
+            .is_none()
+    {
+        anyhow::bail!("image.embedding.endpoint is required when image.embedding.enabled = true");
+    }
+    Ok(())
+}
+
+fn validate_reranker(config: &Config) -> Result<()> {
+    if config.reranker.candidate_limit == 0 {
+        anyhow::bail!("reranker.candidate_limit must be greater than 0");
+    }
+    if config.reranker.timeout_seconds == 0 {
+        anyhow::bail!("reranker.timeout_seconds must be greater than 0");
+    }
+    if config.reranker.enabled
+        && config
+            .reranker
+            .endpoint
+            .as_deref()
+            .map(str::trim)
+            .filter(|endpoint| !endpoint.is_empty())
+            .is_none()
+    {
+        anyhow::bail!("reranker.endpoint is required when reranker.enabled = true");
+    }
     Ok(())
 }
 

@@ -131,6 +131,12 @@ pub struct SearchArgs {
     pub mode: Option<SearchModeArg>,
     #[arg(long, value_enum)]
     pub level: Option<SearchLevelArg>,
+    #[arg(long, value_enum, default_value = "all")]
+    pub kind: SearchKindArg,
+    #[arg(long = "filetype")]
+    pub filetypes: Vec<String>,
+    #[arg(long = "path")]
+    pub paths: Vec<String>,
     #[arg(long)]
     pub limit: Option<usize>,
     #[arg(long)]
@@ -240,6 +246,13 @@ pub enum SearchLevelArg {
     Chunk,
     File,
     Both,
+}
+
+#[derive(Clone, Debug, ValueEnum, PartialEq, Eq)]
+pub enum SearchKindArg {
+    All,
+    Text,
+    Image,
 }
 
 pub fn run() -> anyhow::Result<()> {

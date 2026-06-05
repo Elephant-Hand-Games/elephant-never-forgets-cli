@@ -124,24 +124,38 @@ enf index --no-embed ./docs
 
 `index` embeds chunks for the active profile. For the native provider, indexing
 fails if the active model profile is missing; run `enf models install` to repair
-an older project. Use `--no-embed` only for metadata-only indexing. Indexed file
+an older project. Use `--no-embed` only for metadata-only indexing. Indexed text
 metadata includes relative path, file type/extension, size, modified time, hash,
 full text when enabled, chunks, line ranges, token counts, and embeddings.
-`add` indexes an explicit file or directory path. Explicit file paths are indexed
-even when their extension is not in the default include list, unless they match
-an exclude pattern. `remove` deletes a file path from the index without deleting
-it from disk.
+Image files are indexed when they match `[image.include]`; image embeddings are
+only created when `[image.embedding].enabled = true`. `add` indexes an explicit
+file or directory path only when it is included by the text or image include
+configuration and not excluded. `remove` deletes a file path from the index
+without deleting it from disk.
+
+`enf` also reads `.enfignore` at the project root using gitignore-style patterns.
+Place `.enfignoredir` inside a directory to skip that directory and all of its
+subdirectories during discovery.
 
 ### Search
 
 ```sh
 enf search "where are the agent editing rules?"
 enf search "release notes" --mode hybrid --level chunk --limit 20
+enf search "logo" --kind image --filetype png --path 'assets/**'
 enf retrieve "debugging command output" --json
 ```
 
 Plain text search output wraps matched file paths in local terminal hyperlinks
-when your terminal supports OSC 8 links.
+when your terminal supports OSC 8 links. Mixed results are labeled as `[text]`
+or `[image]`; JSON results include `kind`, `file_type`, and optional
+`rerank_score`.
+
+Search filters:
+
+- `--kind all|text|image`
+- `--filetype <ext>` repeatable, with or without a leading dot
+- `--path <glob>` repeatable
 
 ### Status / Doctor / CI
 
@@ -168,6 +182,19 @@ search command when needed.
   `enf init --db --provider openai-compatible --endpoint https://provider.example.com/v1/embeddings`
 - Generic HTTP:
   `enf init --db --provider http --model custom --endpoint https://api.example.com/embeddings --dimensions 1024`
+
+Optional endpoint-backed features are configured in `.enf.toml`:
+
+- `[reranker] enabled = true` with `endpoint = "http://host:41803/rerank"`
+  reranks filtered search candidates using a response array containing `index`
+  and `score`.
+- `[image.embedding] enabled = true` with `endpoint = "http://host:41802/embed"`
+  embeds indexed images by sending raw base64 image strings. These vectors are
+  stored for future compatible image search, but `search --kind image` currently
+  uses path/metadata matching until a text-to-image query embedding endpoint is
+  configured. The current compatible wrapper reports model
+  `open_clip/ViT-H-14:laion2b_s32b_b79k`, `dimensions = 1024`, and an
+  `embeddings` vector list.
 
 Per-command overrides (for `index`, `search`, `retrieve`):
 
