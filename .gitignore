@@ -18,6 +18,7 @@ target
 **/.enf.toml
 **/.enf.local.toml
 **/.fastembed_cache/
+testing-ground/
 
 # RustRover
 #  JetBrains specific template is maintained in a separate JetBrains.gitignore that can

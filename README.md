@@ -266,22 +266,3 @@ For a complete CLI surface reference, see [`docs/command-reference.md`](./docs/c
 ## Release Process
 
 - Run the release checks in [`docs/release-checklist.md`](./docs/release-checklist.md).
-
-## Local Testing Ground
-
-This repo includes a tiny sample project under [`testing-ground/`](./testing-ground/)
-with a couple of directories, Markdown files, and one text file.
-
-After you install `enf`, try:
-
-```sh
-cd /Users/turnercore/Projects/CLI/elephant-never-forgets-cli/testing-ground
-enf init --db --model-cache project
-enf status
-enf index .
-enf search "where are agent rules documented?"
-enf search "strict offline cache" --mode keyword --cached-query-only
-enf retrieve "provider override warning" --json
-enf doctor
-enf ci --no-embed
-```
