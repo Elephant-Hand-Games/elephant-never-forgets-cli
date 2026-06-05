@@ -1,4 +1,4 @@
-# Elephant Never Forgets
+# Elephant Never Forgets 🐘
 
 `enf` is a native-first Rust CLI for semantic and keyword search over local
 directories, repositories, documentation sets, Obsidian vaults, and agent
