@@ -118,7 +118,7 @@ pub fn run(args: SearchArgs, retrieve: bool) -> Result<()> {
         limit
     };
     let results = top_results(results, candidate_limit, config.search.max_chunks_per_file);
-    let results = maybe_rerank(&config, &args.query, results)?;
+    let results = maybe_rerank(&config, &args.query, results, &mut warnings)?;
     let results = top_results(results, limit, config.search.max_chunks_per_file);
 
     if args.json || retrieve {
@@ -724,6 +724,7 @@ fn maybe_rerank(
     config: &crate::config::Config,
     query: &str,
     mut results: Vec<RankedResult>,
+    warnings: &mut Vec<String>,
 ) -> Result<Vec<RankedResult>> {
     if !config.reranker.enabled || results.is_empty() {
         return Ok(results);
@@ -741,7 +742,16 @@ fn maybe_rerank(
         })
         .collect::<Vec<_>>();
     let provider = crate::providers::RerankerProvider::from_config(config)?;
-    let reranked = provider.rerank(query, texts)?;
+    let reranked = match provider.rerank(query, texts) {
+        Ok(reranked) => reranked,
+        Err(err) => {
+            warnings.push(format!(
+                "reranker disabled for this query: {}",
+                err
+            ));
+            return Ok(results);
+        }
+    };
     let mut reordered = Vec::new();
     let mut used = HashSet::new();
     for item in reranked {
