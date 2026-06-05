@@ -187,3 +187,50 @@ fn active_profile_streams_only_its_vectors_and_preserves_chunk_metadata() {
     let cached = db::query_embedding(&conn, active_profile_id, "alpha beta").unwrap();
     assert_eq!(cached, Some(vec![1.5, 2.5]));
 }
+
+#[test]
+fn image_profiles_and_embeddings_round_trip() {
+    let temp = tempfile::tempdir().unwrap();
+    let conn = db::open_or_create(&temp.path().join(".enf/index.sqlite")).unwrap();
+    let profile_id = db::upsert_image_profile(
+        &conn,
+        "open_clip/ViT-H-14:laion2b_s32b_b79k",
+        Some("http://localhost:41802/embed"),
+        3,
+        true,
+    )
+    .unwrap();
+
+    conn.execute(
+        "INSERT INTO files(path, file_type, hash, size_bytes, indexed_at, content)
+         VALUES ('assets/logo.png', 'png', 'image-hash', 12, datetime('now'), NULL)",
+        [],
+    )
+    .unwrap();
+    let file_id = conn.last_insert_rowid();
+    let image_id = db::upsert_image_record(&conn, file_id).unwrap();
+
+    let missing = db::images_missing_embeddings(&conn, profile_id, 10).unwrap();
+    assert_eq!(missing.len(), 1);
+    assert_eq!(missing[0].image_id, image_id);
+    assert_eq!(missing[0].path, "assets/logo.png");
+
+    db::upsert_image_embedding(&conn, profile_id, image_id, &[0.1, 0.2, 0.3]).unwrap();
+    assert!(db::images_missing_embeddings(&conn, profile_id, 10)
+        .unwrap()
+        .is_empty());
+
+    let rows = db::vector_images_for_profile(&conn, profile_id, 10, 0).unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].image_id, image_id);
+    assert_eq!(rows[0].file_id, file_id);
+    assert_eq!(rows[0].path, "assets/logo.png");
+    assert_eq!(rows[0].file_type, "png");
+    assert_eq!(rows[0].vector, vec![0.1, 0.2, 0.3]);
+
+    db::upsert_image_query_embedding(&conn, profile_id, "logo", &[1.0, 0.0, 0.0]).unwrap();
+    assert_eq!(
+        db::image_query_embedding(&conn, profile_id, "logo").unwrap(),
+        Some(vec![1.0, 0.0, 0.0])
+    );
+}

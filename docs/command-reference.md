@@ -122,11 +122,15 @@ Flags:
 
 Notes:
 - Native `init` installs the active model profile by default.
-- `index` embeds chunks for the active profile and fails if the native model
-  profile is missing.
-- `--no-embed` intentionally skips embedding for metadata-only indexing.
-- Explicit file paths are indexed even when their extension is not in the
-  default include list, unless excluded.
+- `index` embeds text chunks for the active profile and fails if the native
+  model profile is missing.
+- Image files are discovered through `[image.include]`; image embeddings are
+  created only when `[image.embedding].enabled = true`.
+- `--no-embed` intentionally skips text and image embedding for metadata-only indexing.
+- Explicit file paths must match text or image include configuration and must
+  not be excluded.
+- `.enfignore` at the project root uses gitignore-style patterns.
+- `.enfignoredir` inside a directory skips that directory and all descendants.
 
 ## `add`
 
@@ -154,7 +158,7 @@ enf remove <path> [--dry-run]
 Run a query with default output (path list) or JSON output.
 
 ```text
-enf search <query> [--mode <mode>] [--level <level>] [--limit <usize>] [--cached-query-only] [--provider <provider>] [--model <model>] [--variant <variant>] [--endpoint <url>] [--api-key-env <env-var>] [--dimensions <usize>] [--json]
+enf search <query> [--mode <mode>] [--level <level>] [--kind <kind>] [--filetype <ext>]... [--path <glob>]... [--tag <tag>]... [--limit <usize>] [--cached-query-only] [--provider <provider>] [--model <model>] [--variant <variant>] [--endpoint <url>] [--api-key-env <env-var>] [--dimensions <usize>] [--json]
 ```
 
 `retrieve` uses the same options as `search` and always prints JSON result payload.
@@ -164,6 +168,10 @@ Flags:
 - `query` (required positional query string)
 - `--mode <mode>` where `<mode>` is `hybrid`, `vector`, or `keyword`
 - `--level <level>` where `<level>` is `chunk`, `file`, or `both`
+- `--kind <kind>` where `<kind>` is `all`, `text`, or `image`
+- `--filetype <ext>` repeatable, matched case-insensitively without requiring a leading dot
+- `--path <glob>` repeatable path glob filter
+- `--tag <tag>` repeatable, currently reserved for future indexed metadata tags
 - `--limit <usize>`
 - `--cached-query-only`
 - `--json`
@@ -172,6 +180,13 @@ Flags:
 Notes:
 - When stored chunk embeddings exist for the active profile, search/retrieve use
   hybrid ranking over vector similarity, keyword score, and metadata score.
+- When `[image.embedding].enabled = true`, image vector hits can appear beside
+  text hits and are labeled with `kind = "image"`. Local images are sent to the
+  configured endpoint as raw base64 strings; the compatible port 41802 wrapper
+  returns `open_clip/ViT-H-14:laion2b_s32b_b79k` 1024-dimensional vectors.
+- Filters are applied before final top-k and before optional reranking.
+- When `[reranker].enabled = true`, filtered candidates are reranked by the
+  configured `POST /rerank` endpoint.
 - Query embeddings are cached by normalized query. `--cached-query-only` fails if
   the query vector is not already cached for the active profile.
 - Plain text output wraps file paths in OSC 8 terminal hyperlinks when supported.

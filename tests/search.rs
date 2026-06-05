@@ -40,6 +40,18 @@ fn setup_indexed_project() -> tempfile::TempDir {
     temp
 }
 
+fn setup_indexed_project_with_image() -> tempfile::TempDir {
+    let temp = setup_indexed_project();
+    std::fs::create_dir_all(temp.path().join("assets")).unwrap();
+    std::fs::write(temp.path().join("assets/logo.png"), b"fake png bytes").unwrap();
+    enf()
+        .current_dir(temp.path())
+        .args(["index", "--no-embed", "."])
+        .assert()
+        .success();
+    temp
+}
+
 fn load_config(root: &std::path::Path) -> elephant_never_forgets::config::Config {
     let config_text = fs::read_to_string(root.join(".enf.toml")).unwrap();
     toml::from_str(&config_text).unwrap()
@@ -315,4 +327,93 @@ fn vector_file_level_aggregates_seeded_chunk_vectors() {
     assert_eq!(json["results"][0]["mode"], "vector");
     assert_eq!(json["results"][0]["level"], "file");
     assert_eq!(json["results"][0]["vector_score"], 1.0);
+}
+
+#[test]
+fn search_kind_image_returns_labeled_image_results() {
+    let temp = setup_indexed_project_with_image();
+
+    let output = enf()
+        .current_dir(temp.path())
+        .args([
+            "search", "logo", "--kind", "image", "--mode", "keyword", "--json",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: Value = serde_json::from_slice(&output).unwrap();
+
+    assert_eq!(json["results"][0]["kind"], "image");
+    assert_eq!(json["results"][0]["path"], "assets/logo.png");
+    assert_eq!(json["results"][0]["file_type"], "png");
+}
+
+#[test]
+fn search_kind_text_excludes_image_results() {
+    let temp = setup_indexed_project_with_image();
+
+    let output = enf()
+        .current_dir(temp.path())
+        .args([
+            "search", "logo", "--kind", "text", "--mode", "keyword", "--json",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: Value = serde_json::from_slice(&output).unwrap();
+
+    assert!(json["results"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn search_filters_by_filetype_and_path_glob() {
+    let temp = setup_indexed_project_with_image();
+
+    let output = enf()
+        .current_dir(temp.path())
+        .args([
+            "search",
+            "logo",
+            "--kind",
+            "image",
+            "--mode",
+            "keyword",
+            "--filetype",
+            ".png",
+            "--path",
+            "assets/**",
+            "--json",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: Value = serde_json::from_slice(&output).unwrap();
+    assert_eq!(json["results"][0]["path"], "assets/logo.png");
+
+    let output = enf()
+        .current_dir(temp.path())
+        .args([
+            "search",
+            "logo",
+            "--kind",
+            "image",
+            "--mode",
+            "keyword",
+            "--filetype",
+            "jpg",
+            "--json",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: Value = serde_json::from_slice(&output).unwrap();
+    assert!(json["results"].as_array().unwrap().is_empty());
 }

@@ -1,12 +1,13 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::{
-    cli::SearchArgs,
+    cli::{SearchArgs, SearchKindArg},
     config::{SearchLevel, SearchMode},
     errors::EnfError,
     ranking::{self, RankedResult},
 };
-use anyhow::Result;
+use anyhow::{Context, Result};
+use globset::{Glob, GlobSet, GlobSetBuilder};
 
 pub fn run(args: SearchArgs, retrieve: bool) -> Result<()> {
     let mut config = crate::config::load()?;
@@ -39,7 +40,7 @@ pub fn run(args: SearchArgs, retrieve: bool) -> Result<()> {
     let limit = args.limit.unwrap_or(config.search.limit);
     let mut results = Vec::new();
     let mut warnings = Vec::new();
-    if mode != SearchMode::Vector {
+    if mode != SearchMode::Vector && args.kind != SearchKindArg::Image {
         if level != SearchLevel::File {
             results.extend(query_chunks(
                 &conn,
@@ -59,7 +60,7 @@ pub fn run(args: SearchArgs, retrieve: bool) -> Result<()> {
             )?);
         }
     }
-    if mode != SearchMode::Keyword {
+    if mode != SearchMode::Keyword && args.kind != SearchKindArg::Image {
         let has_vectors = active_profile_has_vectors(&conn, profile_id)?;
         if !has_vectors {
             let message = format!(
@@ -89,6 +90,35 @@ pub fn run(args: SearchArgs, retrieve: bool) -> Result<()> {
             results.extend(vector_file_results(vector_search)?);
         }
     }
+    if args.kind != SearchKindArg::Text {
+        if mode != SearchMode::Vector {
+            results.extend(query_images_by_path(
+                &conn,
+                &args.query,
+                limit,
+                &profile.profile_hash,
+            )?);
+        }
+        if mode != SearchMode::Keyword && config.image.embedding.enabled {
+            match image_vector_results(&conn, &config, &args.query, &normalized_query, limit, &mode)
+            {
+                Ok(image_results) => results.extend(image_results),
+                Err(err) if args.kind == SearchKindArg::Image || mode == SearchMode::Vector => {
+                    return Err(err);
+                }
+                Err(err) => warnings.push(format!("image vector search skipped: {err}")),
+            }
+        }
+    }
+    let filters = SearchFilters::from_args(&args)?;
+    let results = filters.apply(results);
+    let candidate_limit = if config.reranker.enabled {
+        config.reranker.candidate_limit.max(limit)
+    } else {
+        limit
+    };
+    let results = top_results(results, candidate_limit, config.search.max_chunks_per_file);
+    let results = maybe_rerank(&config, &args.query, results)?;
     let results = top_results(results, limit, config.search.max_chunks_per_file);
 
     if args.json || retrieve {
@@ -108,9 +138,17 @@ pub fn run(args: SearchArgs, retrieve: bool) -> Result<()> {
         for result in results {
             let label = result_label(&cwd, &result);
             if let (Some(start), Some(end)) = (result.start_line, result.end_line) {
-                println!("{label}:{start}-{end}  {:.3}", result.score);
+                println!(
+                    "{} {label}:{start}-{end}  {:.3}",
+                    result_kind_label(&result),
+                    result.score
+                );
             } else {
-                println!("{label}  {:.3}", result.score);
+                println!(
+                    "{} {label}  {:.3}",
+                    result_kind_label(&result),
+                    result.score
+                );
             }
         }
     }
@@ -128,6 +166,14 @@ fn result_label(cwd: &std::path::Path, result: &RankedResult) -> String {
         url.push_str(&format!("#L{line}"));
     }
     format!("\x1b]8;;{url}\x1b\\{}\x1b]8;;\x1b\\", result.path)
+}
+
+fn result_kind_label(result: &RankedResult) -> &'static str {
+    if result.kind == "image" {
+        "[image]"
+    } else {
+        "[text]"
+    }
 }
 
 fn percent_encode(input: &str) -> String {
@@ -187,7 +233,9 @@ fn vector_chunk_results(search: VectorSearch<'_>) -> Result<Vec<RankedResult>> {
                     path: row.path.clone(),
                     snippet: snippet(&row.text, search.config.search.snippet_chars),
                     score,
+                    rerank_score: None,
                     kind: "chunk".into(),
+                    file_type: file_type(&row.path),
                     file_id: Some(row.file_id),
                     chunk_id: Some(row.chunk_id),
                     chunk_index: Some(row.chunk_index),
@@ -235,6 +283,7 @@ fn vector_file_results(search: VectorSearch<'_>) -> Result<Vec<RankedResult>> {
     let mut top = ranking::TopK::new(search.limit);
     for aggregate in files.into_values() {
         let centroid = aggregate.centroid();
+        let file_type = file_type(&aggregate.path);
         let vector_score = ranking::cosine_similarity(&query_vector, &centroid).max(0.0);
         let keyword_score = ranking::keyword_score(
             search.query,
@@ -252,7 +301,9 @@ fn vector_file_results(search: VectorSearch<'_>) -> Result<Vec<RankedResult>> {
             path: aggregate.path,
             snippet: snippet(&aggregate.sample, search.config.search.snippet_chars),
             score,
+            rerank_score: None,
             kind: "file".into(),
+            file_type,
             file_id: Some(aggregate.file_id),
             chunk_id: None,
             chunk_index: None,
@@ -380,6 +431,7 @@ fn query_chunks(
     let mut results = Vec::new();
     for row in rows {
         let (file_id, chunk_id, path, chunk_index, start_line, end_line, text) = row?;
+        let file_type = file_type(&path);
         let keyword_score = ranking::keyword_score(query, &format!("{path}\n{text}"));
         let metadata_score = ranking::keyword_score(query, &path);
         let score = ranking::hybrid_score(
@@ -396,7 +448,9 @@ fn query_chunks(
             path,
             snippet: snippet(&text, snippet_chars),
             score,
+            rerank_score: None,
             kind: "chunk".into(),
+            file_type,
             file_id: Some(file_id),
             chunk_id: Some(chunk_id),
             chunk_index: Some(chunk_index),
@@ -452,6 +506,7 @@ fn query_files(
     let mut results = Vec::new();
     for row in rows {
         let (file_id, path, content) = row?;
+        let file_type = file_type(&path);
         let content = content.unwrap_or_default();
         let keyword_score = ranking::keyword_score(query, &format!("{path}\n{content}"));
         let metadata_score = ranking::keyword_score(query, &path);
@@ -469,7 +524,9 @@ fn query_files(
             path,
             snippet: snippet(&content, snippet_chars),
             score,
+            rerank_score: None,
             kind: "file".into(),
+            file_type,
             file_id: Some(file_id),
             chunk_id: None,
             chunk_index: None,
@@ -486,8 +543,238 @@ fn query_files(
     Ok(results)
 }
 
+fn query_images_by_path(
+    conn: &rusqlite::Connection,
+    query: &str,
+    limit: usize,
+    profile_hash: &str,
+) -> Result<Vec<RankedResult>> {
+    let mut stmt = conn.prepare(
+        "SELECT i.id, f.id, f.path, f.file_type
+         FROM images i
+         JOIN files f ON f.id = i.file_id
+         ORDER BY f.path",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, i64>(0)?,
+            row.get::<_, i64>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, String>(3)?,
+        ))
+    })?;
+    let mut top = ranking::TopK::new(limit.saturating_mul(2).max(limit));
+    for row in rows {
+        let (image_id, file_id, path, file_type) = row?;
+        let metadata_score = ranking::keyword_score(query, &path);
+        if metadata_score == 0.0 {
+            continue;
+        }
+        top.push(RankedResult {
+            path: path.clone(),
+            snippet: path.clone(),
+            score: metadata_score,
+            rerank_score: None,
+            kind: "image".into(),
+            file_type,
+            file_id: Some(file_id),
+            chunk_id: Some(image_id),
+            chunk_index: None,
+            start_line: None,
+            end_line: None,
+            keyword_score: 0.0,
+            vector_score: 0.0,
+            metadata_score,
+            profile_hash: profile_hash.to_string(),
+            mode: "keyword".into(),
+            level: "image".into(),
+        });
+    }
+    Ok(top.into_sorted_vec())
+}
+
+fn image_vector_results(
+    conn: &rusqlite::Connection,
+    config: &crate::config::Config,
+    query: &str,
+    normalized_query: &str,
+    limit: usize,
+    mode: &SearchMode,
+) -> Result<Vec<RankedResult>> {
+    let endpoint = config
+        .image
+        .embedding
+        .endpoint
+        .as_deref()
+        .filter(|endpoint| !endpoint.trim().is_empty())
+        .context("image.embedding.endpoint is required when image embeddings are enabled")?;
+    let image_profile_id = crate::db::upsert_image_profile(
+        conn,
+        &config.image.embedding.model,
+        Some(endpoint),
+        config.image.embedding.dimensions,
+        config.image.embedding.normalize,
+    )?;
+    let has_vectors =
+        !crate::db::vector_images_for_profile(conn, image_profile_id, 1, 0)?.is_empty();
+    if !has_vectors {
+        return Ok(Vec::new());
+    }
+    let text_profile = crate::embed::active_profile(config);
+    let text_profile_id = crate::db::upsert_embedding_profile(conn, &text_profile)?;
+    let search = VectorSearch {
+        conn,
+        config,
+        profile_id: text_profile_id,
+        profile_hash: &text_profile.profile_hash,
+        query,
+        normalized_query,
+        cached_query_only: false,
+        limit,
+        mode,
+    };
+    let query_vector = query_vector(search)?;
+    let mut top = ranking::TopK::new(limit.saturating_mul(2).max(limit));
+    crate::db::stream_vector_images_for_profile(
+        conn,
+        image_profile_id,
+        config.search.batch_scan_size,
+        |rows| {
+            for row in rows {
+                let vector_score = ranking::cosine_similarity(&query_vector, &row.vector).max(0.0);
+                let metadata_score = ranking::keyword_score(query, &row.path);
+                let score = weighted_score(mode, config, vector_score, 0.0, metadata_score);
+                top.push(RankedResult {
+                    path: row.path.clone(),
+                    snippet: row.path.clone(),
+                    score,
+                    rerank_score: None,
+                    kind: "image".into(),
+                    file_type: row.file_type.clone(),
+                    file_id: Some(row.file_id),
+                    chunk_id: Some(row.image_id),
+                    chunk_index: None,
+                    start_line: None,
+                    end_line: None,
+                    keyword_score: 0.0,
+                    vector_score,
+                    metadata_score,
+                    profile_hash: crate::db::image_profile_hash_for_config(config),
+                    mode: mode_label(mode).into(),
+                    level: "image".into(),
+                });
+            }
+            Ok(())
+        },
+    )?;
+    Ok(top.into_sorted_vec())
+}
+
 fn snippet(text: &str, chars: usize) -> String {
     text.chars().take(chars).collect()
+}
+
+struct SearchFilters {
+    kind: SearchKindArg,
+    filetypes: HashSet<String>,
+    paths: GlobSet,
+    has_path_filters: bool,
+}
+
+impl SearchFilters {
+    fn from_args(args: &SearchArgs) -> Result<Self> {
+        let filetypes = args
+            .filetypes
+            .iter()
+            .map(normalize_filetype)
+            .filter(|filetype| !filetype.is_empty())
+            .collect::<HashSet<_>>();
+        let mut builder = GlobSetBuilder::new();
+        for path in &args.paths {
+            builder.add(Glob::new(path).with_context(|| format!("parsing --path glob {path}"))?);
+        }
+        Ok(Self {
+            kind: args.kind.clone(),
+            filetypes,
+            paths: builder.build()?,
+            has_path_filters: !args.paths.is_empty(),
+        })
+    }
+
+    fn apply(&self, results: Vec<RankedResult>) -> Vec<RankedResult> {
+        results
+            .into_iter()
+            .filter(|result| match self.kind {
+                SearchKindArg::All => true,
+                SearchKindArg::Text => result.kind != "image",
+                SearchKindArg::Image => result.kind == "image",
+            })
+            .filter(|result| {
+                self.filetypes.is_empty()
+                    || self
+                        .filetypes
+                        .contains(&normalize_filetype(&result.file_type))
+            })
+            .filter(|result| !self.has_path_filters || self.paths.is_match(&result.path))
+            .collect()
+    }
+}
+
+fn maybe_rerank(
+    config: &crate::config::Config,
+    query: &str,
+    mut results: Vec<RankedResult>,
+) -> Result<Vec<RankedResult>> {
+    if !config.reranker.enabled || results.is_empty() {
+        return Ok(results);
+    }
+    let candidate_limit = config.reranker.candidate_limit.min(results.len());
+    let texts = results
+        .iter()
+        .take(candidate_limit)
+        .map(|result| {
+            if result.kind == "image" {
+                format!("image path: {}", result.path)
+            } else {
+                format!("{}\n{}", result.path, result.snippet)
+            }
+        })
+        .collect::<Vec<_>>();
+    let provider = crate::providers::RerankerProvider::from_config(config)?;
+    let reranked = provider.rerank(query, texts)?;
+    let mut reordered = Vec::new();
+    let mut used = HashSet::new();
+    for item in reranked {
+        if item.index >= candidate_limit || !used.insert(item.index) {
+            continue;
+        }
+        let mut result = results[item.index].clone();
+        result.rerank_score = Some(item.score);
+        result.score = item.score;
+        reordered.push(result);
+    }
+    for (idx, result) in results.drain(..).enumerate() {
+        if !used.contains(&idx) {
+            reordered.push(result);
+        }
+    }
+    Ok(reordered)
+}
+
+fn file_type(path: &str) -> String {
+    std::path::Path::new(path)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(normalize_filetype)
+        .unwrap_or_default()
+}
+
+fn normalize_filetype(filetype: impl AsRef<str>) -> String {
+    filetype
+        .as_ref()
+        .trim()
+        .trim_start_matches('.')
+        .to_ascii_lowercase()
 }
 
 fn fts_query(query: &str) -> Option<String> {

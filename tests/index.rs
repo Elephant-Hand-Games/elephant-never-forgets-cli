@@ -72,6 +72,52 @@ fn discovery_honors_include_and_exclude_patterns() {
 }
 
 #[test]
+fn discovery_honors_enfignore_and_enfignoredir() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    write_file(root, ".enfignore", "ignored-by-file/**\n*.skip.md\n");
+    write_file(root, "docs/keep.md", "keep");
+    write_file(root, "docs/drop.skip.md", "drop");
+    write_file(root, "ignored-by-file/drop.md", "drop");
+    write_file(root, "ignored-dir/.enfignoredir", "");
+    write_file(root, "ignored-dir/nested/drop.md", "drop");
+
+    let files = discovery::discover(root, root, &test_config()).unwrap();
+    let paths: Vec<_> = files.into_iter().map(|file| file.relative_path).collect();
+
+    assert_eq!(paths, vec!["docs/keep.md"]);
+}
+
+#[test]
+fn discovery_classifies_default_image_includes() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    write_file(
+        root,
+        "assets/logo.png",
+        "not a real png but enough for discovery",
+    );
+    write_file(root, "docs/readme.md", "text");
+
+    let files = discovery::discover(root, root, &test_config()).unwrap();
+    let kinds = files
+        .into_iter()
+        .map(|file| (file.relative_path, file.kind))
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        kinds,
+        vec![
+            (
+                "assets/logo.png".into(),
+                discovery::DiscoveredFileKind::Image
+            ),
+            ("docs/readme.md".into(), discovery::DiscoveredFileKind::Text),
+        ]
+    );
+}
+
+#[test]
 fn index_keeps_chunk_stability_for_unchanged_files() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path();
@@ -221,7 +267,8 @@ fn index_removes_deleted_files_when_root_is_reindexed() {
 fn explicit_file_indexing_records_file_type_and_remove_deletes_it() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path();
-    let config = test_config();
+    let mut config = test_config();
+    config.text.include.patterns.push("**/*.weird".into());
 
     write_file(root, "metadata/custom.weird", "semantic custom metadata");
     index::index_path(
