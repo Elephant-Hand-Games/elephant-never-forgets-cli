@@ -134,7 +134,7 @@ fn update_dry_run_prints_installer_command_and_env() {
         .args([
             "update",
             "--version",
-            "v1.2.4",
+            "v1.2.5",
             "--install-dir",
             "/tmp/enf/bin",
             "--method",
@@ -145,7 +145,7 @@ fn update_dry_run_prints_installer_command_and_env() {
         .success()
         .stdout(predicate::str::contains("curl -fsSL"))
         .stdout(predicate::str::contains("scripts/install.sh"))
-        .stdout(predicate::str::contains("ENF_VERSION=v1.2.4"))
+        .stdout(predicate::str::contains("ENF_VERSION=v1.2.5"))
         .stdout(predicate::str::contains("ENF_INSTALL_DIR=/tmp/enf/bin"))
         .stdout(predicate::str::contains("ENF_INSTALL_METHOD=binary"));
 }
