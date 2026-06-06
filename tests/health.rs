@@ -23,7 +23,7 @@ fn setup_project() -> tempfile::TempDir {
         .success();
     enf()
         .current_dir(temp.path())
-        .args(["index", "--no-embed", "."])
+        .args(["index", "--no-embeddings", "."])
         .assert()
         .success();
     temp
@@ -80,7 +80,7 @@ fn ci_no_embed_checks_config_and_database_only() {
 
     enf()
         .current_dir(temp.path())
-        .args(["ci", "--no-embed"])
+        .args(["doctor", "--ci", "--no-embeddings"])
         .assert()
         .success()
         .stdout(predicate::str::contains("ENF CI checks passed"));
@@ -92,7 +92,7 @@ fn ci_dry_run_reports_planned_checks_without_running_repairs() {
 
     let output = enf()
         .current_dir(temp.path())
-        .args(["ci", "--install-models", "--dry-run", "--json"])
+        .args(["doctor", "--ci", "--install-models", "--dry-run", "--json"])
         .assert()
         .success()
         .get_output()
@@ -111,7 +111,7 @@ fn ci_fails_when_embeddings_are_required_but_missing() {
 
     enf()
         .current_dir(temp.path())
-        .args(["ci"])
+        .args(["doctor", "--ci"])
         .assert()
         .failure()
         .stderr(predicate::str::contains("ENF CI checks failed"));

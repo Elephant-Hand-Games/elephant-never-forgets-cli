@@ -16,6 +16,7 @@ pub mod output;
 pub mod providers;
 pub mod ranking;
 pub mod search;
+pub mod setup;
 pub mod update;
 
 pub fn run() -> anyhow::Result<()> {

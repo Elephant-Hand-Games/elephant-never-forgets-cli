@@ -9,9 +9,13 @@ fn help_exposes_core_commands() {
         .assert()
         .success()
         .stdout(predicate::str::contains("init"))
+        .stdout(predicate::str::contains("setup"))
+        .stdout(predicate::str::contains("config"))
         .stdout(predicate::str::contains("models"))
         .stdout(predicate::str::contains("update"))
-        .stdout(predicate::str::contains("search"));
+        .stdout(predicate::str::contains("search"))
+        .stdout(predicate::str::contains("add").not())
+        .stdout(predicate::str::contains("ci").not());
 }
 
 #[test]
@@ -26,7 +30,66 @@ fn init_help_guides_model_and_chunking_choices() {
         .stdout(predicate::str::contains("Nomic"))
         .stdout(predicate::str::contains("larger documents"))
         .stdout(predicate::str::contains("--chunking"))
-        .stdout(predicate::str::contains("--interactive"));
+        .stdout(predicate::str::contains("--interactive"))
+        .stdout(predicate::str::contains("--preset"))
+        .stdout(predicate::str::contains("--no-input"))
+        .stdout(predicate::str::contains("--yes"));
+}
+
+#[test]
+fn setup_presets_and_config_commands_are_available() {
+    Command::cargo_bin("enf")
+        .unwrap()
+        .args(["setup", "presets"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("local"))
+        .stdout(predicate::str::contains("openai"))
+        .stdout(predicate::str::contains("keyword"));
+
+    Command::cargo_bin("enf")
+        .unwrap()
+        .args(["setup", "preset", "local"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Preset: local"))
+        .stdout(predicate::str::contains("embedding.provider"));
+}
+
+#[test]
+fn config_explain_and_set_support_safe_keys() {
+    let temp = tempfile::tempdir().unwrap();
+    Command::cargo_bin("enf")
+        .unwrap()
+        .current_dir(temp.path())
+        .env("ENF_SKIP_NATIVE_MODEL_LOAD", "1")
+        .args(["init", "--yes"])
+        .assert()
+        .success();
+
+    Command::cargo_bin("enf")
+        .unwrap()
+        .current_dir(temp.path())
+        .args(["config", "explain", "reranker.endpoint"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("HTTP endpoint"));
+
+    Command::cargo_bin("enf")
+        .unwrap()
+        .current_dir(temp.path())
+        .args(["config", "set", "search.limit", "20"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Updated config"));
+
+    Command::cargo_bin("enf")
+        .unwrap()
+        .current_dir(temp.path())
+        .args(["config", "show", "search"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("limit = 20"));
 }
 
 #[test]
@@ -38,9 +101,8 @@ fn init_creates_config_and_database() {
         .arg("init")
         .assert()
         .success()
-        .stdout(predicate::str::contains(
-            "Initialized Elephant Never Forgets project",
-        ));
+        .stdout(predicate::str::contains("Ready."))
+        .stdout(predicate::str::contains("Wrote .enf.toml"));
 
     assert!(temp.path().join(".enf.toml").exists());
     assert!(temp.path().join(".enf/index.sqlite").exists());
@@ -56,7 +118,8 @@ fn init_dry_run_does_not_create_project_files() {
         .args(["init", "--dry-run"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("Dry run: would initialize"));
+        .stdout(predicate::str::contains("Plan"))
+        .stdout(predicate::str::contains("Create .enf.toml"));
 
     assert!(!temp.path().join(".enf.toml").exists());
     assert!(!temp.path().join(".enf").exists());
@@ -96,7 +159,7 @@ fn index_json_outputs_machine_readable_summary() {
         .unwrap()
         .current_dir(temp.path())
         .env("ENF_SKIP_NATIVE_MODEL_LOAD", "1")
-        .args(["index", ".", "--no-embed", "--json"])
+        .args(["index", ".", "--no-embeddings", "--json"])
         .assert()
         .success()
         .get_output()
@@ -149,7 +212,7 @@ fn update_dry_run_prints_installer_command_and_env() {
         .args([
             "update",
             "--version",
-            "v1.3.1",
+            "v2.0.0",
             "--install-dir",
             "/tmp/enf/bin",
             "--method",
@@ -160,7 +223,7 @@ fn update_dry_run_prints_installer_command_and_env() {
         .success()
         .stdout(predicate::str::contains("curl -fsSL"))
         .stdout(predicate::str::contains("scripts/install.sh"))
-        .stdout(predicate::str::contains("ENF_VERSION=v1.3.1"))
+        .stdout(predicate::str::contains("ENF_VERSION=v2.0.0"))
         .stdout(predicate::str::contains("ENF_INSTALL_DIR=/tmp/enf/bin"))
         .stdout(predicate::str::contains("ENF_INSTALL_METHOD=binary"));
 }
@@ -180,7 +243,7 @@ fn remove_dry_run_reports_path_without_deleting_index_row() {
         .unwrap()
         .current_dir(temp.path())
         .env("ENF_SKIP_NATIVE_MODEL_LOAD", "1")
-        .args(["index", ".", "--no-embed"])
+        .args(["index", ".", "--no-embeddings"])
         .assert()
         .success();
 

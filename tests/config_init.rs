@@ -350,7 +350,7 @@ fn init_db_false_requires_existing_database() {
         .assert()
         .failure()
         .stderr(predicates::str::contains(
-            "--db=false requires an existing database",
+            "--no-db requires an existing database",
         ));
 
     assert!(!temp.path().join(".enf.toml").exists());

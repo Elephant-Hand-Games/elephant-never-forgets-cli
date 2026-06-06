@@ -129,36 +129,40 @@ pub fn run(args: SearchArgs, retrieve: bool) -> Result<()> {
     let results = maybe_rerank(&config, &args.query, results, &mut warnings)?;
     let results = top_results(results, limit, config.search.max_chunks_per_file);
 
-    if args.json || retrieve {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&serde_json::json!({
-                "query": args.query,
-                "profile_hash": profile.profile_hash,
-                "warnings": warnings,
-                "results": results,
-            }))?
-        );
+    if args.jsonl {
+        for (rank, result) in results.iter().enumerate() {
+            println!(
+                "{}",
+                serde_json::to_string(&json_result(&cwd, rank + 1, result))?
+            );
+        }
+    } else if args.json || retrieve {
+        let payload = serde_json::json!({
+            "schema_version": "1",
+            "query": args.query,
+            "mode": mode_label(&mode),
+            "level": level_label(&level),
+            "profile": {
+                "provider": profile.provider,
+                "engine": profile.engine,
+                "model": profile.model,
+                "variant": profile.variant,
+                "dimensions": profile.dimensions,
+                "hash": profile.profile_hash,
+            },
+            "warnings": warnings,
+            "results": results
+                .iter()
+                .enumerate()
+                .map(|(index, result)| json_result(&cwd, index + 1, result))
+                .collect::<Vec<_>>(),
+        });
+        println!("{}", serde_json::to_string_pretty(&payload)?);
     } else {
         for warning in &warnings {
-            eprintln!("warning: {warning}");
+            eprintln!("warning[ENF_SEARCH]: {warning}");
         }
-        for result in results {
-            let label = result_label(&cwd, &result);
-            if let (Some(start), Some(end)) = (result.start_line, result.end_line) {
-                println!(
-                    "{} {label}:{start}-{end}  {:.3}",
-                    result_kind_label(&result),
-                    result.score
-                );
-            } else {
-                println!(
-                    "{} {label}  {:.3}",
-                    result_kind_label(&result),
-                    result.score
-                );
-            }
-        }
+        print_human_results(&cwd, &args, &mode, &level, &results);
     }
     Ok(())
 }
@@ -176,11 +180,160 @@ fn result_label(cwd: &std::path::Path, result: &RankedResult) -> String {
     format!("\x1b]8;;{url}\x1b\\{}\x1b]8;;\x1b\\", result.path)
 }
 
-fn result_kind_label(result: &RankedResult) -> &'static str {
+fn print_human_results(
+    cwd: &std::path::Path,
+    args: &SearchArgs,
+    mode: &SearchMode,
+    level: &SearchLevel,
+    results: &[RankedResult],
+) {
+    if args.compact {
+        for result in results {
+            let label = plain_result_label(result);
+            println!("{label:<48} {:.3}", result.score);
+        }
+        return;
+    }
+
+    println!("Search: {}", args.query);
+    println!(
+        "Mode: {}   Scope: {}   Results: {}",
+        mode_label(mode),
+        level_label(level),
+        results.len()
+    );
+    println!();
+
+    if results.is_empty() {
+        println!("No results for: \"{}\"", args.query);
+        println!();
+        println!("Try");
+        println!("  enf search \"{}\" --mode keyword", args.query);
+        println!("  enf status");
+        return;
+    }
+
+    for (index, result) in results.iter().enumerate() {
+        let label = result_label(cwd, result);
+        let location = line_suffix(result);
+        println!(
+            "{}. {}{}  score {:.3}",
+            index + 1,
+            label,
+            location,
+            result.score
+        );
+        println!("   why: {}", result_reason(result));
+        if args.explain {
+            println!("   vector score:   {:.3}", result.vector_score);
+            println!("   keyword score:  {:.3}", result.keyword_score);
+            println!("   metadata score: {:.3}", result.metadata_score);
+            println!(
+                "   rerank score:   {}",
+                result
+                    .rerank_score
+                    .map(|score| format!("{score:.3}"))
+                    .unwrap_or_else(|| "not used".into())
+            );
+            println!("   profile:        {}", result.profile_hash);
+        }
+        if args.full {
+            println!("   {}", indent_multiline(&result.snippet));
+        } else if !result.snippet.trim().is_empty() {
+            println!("   {}", one_line_snippet(&result.snippet));
+        }
+        println!();
+    }
+
+    println!("Machine output:");
+    println!("  enf retrieve \"{}\"", args.query);
+}
+
+fn json_result(cwd: &std::path::Path, rank: usize, result: &RankedResult) -> serde_json::Value {
+    serde_json::json!({
+        "rank": rank,
+        "path": result.path,
+        "source_uri": source_uri(cwd, result),
+        "kind": clean_kind(result),
+        "level": result.level,
+        "start_line": result.start_line,
+        "end_line": result.end_line,
+        "text": result.snippet,
+        "snippet": one_line_snippet(&result.snippet),
+        "score": result.score,
+        "scores": {
+            "vector": result.vector_score,
+            "keyword": result.keyword_score,
+            "metadata": result.metadata_score,
+            "rerank": result.rerank_score,
+        },
+        "file_type": result.file_type,
+    })
+}
+
+fn clean_kind(result: &RankedResult) -> &'static str {
     if result.kind == "image" {
-        "[image]"
+        "image"
     } else {
-        "[text]"
+        "text"
+    }
+}
+
+fn source_uri(cwd: &std::path::Path, result: &RankedResult) -> String {
+    let path = cwd.join(&result.path);
+    let mut uri = format!("file://{}", percent_encode(&path.to_string_lossy()));
+    if let Some(line) = result.start_line {
+        uri.push_str(&format!("#L{line}"));
+    }
+    uri
+}
+
+fn plain_result_label(result: &RankedResult) -> String {
+    format!("{}{}", result.path, line_suffix(result))
+}
+
+fn line_suffix(result: &RankedResult) -> String {
+    match (result.start_line, result.end_line) {
+        (Some(start), Some(end)) => format!(":{start}-{end}"),
+        (Some(start), None) => format!(":{start}"),
+        _ => String::new(),
+    }
+}
+
+fn result_reason(result: &RankedResult) -> String {
+    let mut reasons = Vec::new();
+    if result.vector_score > 0.0 {
+        reasons.push("semantic match");
+    }
+    if result.keyword_score > 0.0 {
+        reasons.push("keyword match");
+    }
+    if result.metadata_score > 0.0 {
+        reasons.push("path match");
+    }
+    if result.rerank_score.is_some() {
+        reasons.push("reranked");
+    }
+    if reasons.is_empty() {
+        "ranked by available metadata".into()
+    } else {
+        reasons.join(" + ")
+    }
+}
+
+fn one_line_snippet(snippet: &str) -> String {
+    snippet.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn indent_multiline(text: &str) -> String {
+    text.lines().collect::<Vec<_>>().join("\n   ")
+}
+
+fn level_label(level: &SearchLevel) -> &'static str {
+    match level {
+        SearchLevel::Chunk => "chunk",
+        SearchLevel::File => "file",
+        SearchLevel::Both => "both",
     }
 }
 

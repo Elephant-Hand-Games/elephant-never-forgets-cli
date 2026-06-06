@@ -51,7 +51,7 @@ pub fn run(args: ModelsArgs) -> Result<()> {
             install_active_model(&install_config)?;
             print_model_status(&install_config, install.json)
         }
-        ModelsCommand::CachePath(json) => {
+        ModelsCommand::Path(json) | ModelsCommand::CachePath(json) => {
             let path = cache_path(&config)?;
             if json.json {
                 println!("{}", serde_json::json!({ "cache_path": path }));
@@ -60,7 +60,7 @@ pub fn run(args: ModelsArgs) -> Result<()> {
             }
             Ok(())
         }
-        ModelsCommand::Gc(json) => {
+        ModelsCommand::Clean(json) | ModelsCommand::Gc(json) => {
             if json.json {
                 println!(
                     "{}",

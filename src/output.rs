@@ -66,32 +66,62 @@ pub fn status(args: StatusArgs) -> Result<()> {
     if args.json {
         println!("{}", serde_json::to_string_pretty(&report)?);
     } else {
-        println!("Elephant Never Forgets status");
-        println!("  config: {}", report.config);
-        println!("  database: {}", report.db_path);
-        println!("  provider: {}", report.active_profile.provider);
-        println!("  model: {}", report.active_profile.model);
-        println!("  profile: {}", report.active_profile.profile_hash);
-        println!("  model installed: {}", report.model_installed);
-        if let Some(native_runtime_available) = report.native_runtime_available {
-            println!("  native runtime available: {}", native_runtime_available);
-        }
-        println!("  files: {}", report.counts.files);
-        println!("  chunks: {}", report.counts.chunks);
+        let ready = report.counts.files > 0
+            && report.counts.missing_active_profile_embeddings == 0
+            && provider_ready(&report);
         println!(
-            "  active profile embeddings: {}",
-            report.counts.active_profile_embeddings
+            "ENF status: {}",
+            if ready { "ready" } else { "needs attention" }
+        );
+        println!();
+        println!("Project");
+        println!("  Config:    {}", report.config);
+        println!("  Database:  {}", report.db_path);
+        println!();
+        println!("Content");
+        println!("  Files indexed:        {}", report.counts.files);
+        println!("  Text chunks:          {}", report.counts.chunks);
+        println!();
+        println!("Embeddings");
+        println!("  Provider:             {}", provider_label(&report));
+        println!("  Model:                {}", report.active_profile.model);
+        println!(
+            "  Embedded chunks:      {} / {}",
+            report.counts.active_profile_embeddings, report.counts.chunks
         );
         println!(
-            "  missing active profile embeddings: {}",
+            "  Missing embeddings:   {}",
             report.counts.missing_active_profile_embeddings
         );
-        println!("  indexed profiles: {}", report.indexed_profiles.len());
+        println!("  Model installed:      {}", report.model_installed);
+        if let Some(native_runtime_available) = report.native_runtime_available {
+            println!("  Native runtime:       {}", native_runtime_available);
+        }
+        println!();
+        println!("Useful commands");
+        if report.counts.files == 0 {
+            println!("  enf index .");
+        }
+        if report.counts.missing_active_profile_embeddings > 0 {
+            println!("  enf index . --reembed");
+            println!("  enf search \"your query\" --mode keyword");
+        } else {
+            println!("  enf search \"your query\"");
+        }
+        println!("  enf doctor");
     }
     Ok(())
 }
 
 pub fn doctor(args: DoctorArgs) -> Result<()> {
+    if args.ci {
+        return ci(CiArgs {
+            no_embed: args.no_embeddings,
+            install_models: args.install_models,
+            json: args.json,
+            dry_run: args.dry_run,
+        });
+    }
     let config = crate::config::load()?;
     crate::config::validate(&config)?;
     let cwd = std::env::current_dir()?;
@@ -110,6 +140,16 @@ pub fn doctor(args: DoctorArgs) -> Result<()> {
             "  missing active profile embeddings: {}",
             report.counts.missing_active_profile_embeddings
         );
+        if report.counts.missing_active_profile_embeddings > 0 {
+            println!("    run: enf index . --reembed");
+        }
+        println!(
+            "Result: {}",
+            if report.ok { "ready" } else { "problems found" }
+        );
+    }
+    if args.fix && !args.dry_run && (args.install_models || args.yes) {
+        crate::models::install_active_model(&config)?;
     }
     Ok(())
 }
@@ -168,10 +208,21 @@ pub fn ci(args: CiArgs) -> Result<()> {
 
     if !ok {
         anyhow::bail!(
-            "ENF CI checks failed. Run `enf doctor` for diagnostics or `enf ci --no-embed` for config/database-only checks."
+            "ENF CI checks failed. Run `enf doctor` for diagnostics or `enf doctor --ci --no-embeddings` for config/database-only checks."
         );
     }
     Ok(())
+}
+
+fn provider_ready(report: &StatusReport) -> bool {
+    report.native_runtime_available.unwrap_or(true) && report.model_installed
+}
+
+fn provider_label(report: &StatusReport) -> String {
+    match report.active_profile.provider.as_str() {
+        "native" => "local packaged model".into(),
+        other => other.to_string(),
+    }
 }
 
 fn status_report(config: &Config, conn: &Connection) -> Result<StatusReport> {

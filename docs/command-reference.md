@@ -1,247 +1,200 @@
 # Command Reference
 
-Generated from `src/cli.rs`.
-
-## Top level
+`enf` is organized around a small visible command tree:
 
 ```text
-enf <command>
+enf init [PATH]          Set up ENF in this project
+enf setup               Change providers, presets, reranker, images, or search defaults
+enf index [PATH]        Add or refresh files in the index
+enf search <QUERY>      Human-friendly search with snippets
+enf retrieve <QUERY>    RAG-friendly retrieval with stable JSON
+enf status              Show whether the project is ready
+enf doctor              Diagnose setup problems
+enf config              Show, explain, edit, or validate .enf.toml
+enf models              Manage local embedding model assets
+enf update              Update ENF
 ```
 
-Commands:
-
-- `init`
-- `models`
-- `index`
-- `add`
-- `remove`
-- `search`
-- `retrieve`
-- `status`
-- `doctor`
-- `ci`
-- `update`
+Hidden compatibility aliases still work: `add`, `remove`, `ci`, `find`,
+`models cache-path`, `models gc`, `--changed-only`, `--no-embed`, and
+`--db=false`.
 
 ## `init`
 
-Initialize project state and write `.enf.toml`.
-
 ```text
-enf init [--db[=<sqlite|false>]] [--native-embed|--local-embed] [--provider <provider>] [--model <model>] [--variant <variant>] [--endpoint <url>] [--api-key-env <env-var>] [--dimensions <usize>] [--model-cache <scope>] [--install-models] [--index] [--force] [--dry-run]
+enf init [--preset <preset>] [--provider <provider>] [--model <model>]
+         [--endpoint <url>] [--api-key-env <env-var>] [--dimensions <n>]
+         [--chunking <smart|line-window|off>] [--model-cache <global|project>]
+         [--index] [--install-models] [--force] [--no-db]
+         [--interactive] [--no-input] [--yes] [--dry-run]
 ```
 
-Flags:
+In a TTY, plain `enf init` guides setup. In non-TTY/CI contexts it never prompts;
+use `--yes`, `--no-input`, and explicit flags.
 
-- `--db[=<sqlite|false>]`
-  - omitted or `--db` means `sqlite`
-  - `--db=false` skips DB creation and requires the configured DB to already exist
-- `--native-embed` (alias: `--local-embed`)
-- `--provider <provider>` where `<provider>` is one of:
-  - `native`
-  - `ollama`
-  - `openai`
-  - `openai-compatible`
-  - `http`
-- `--model <string>`
-- `--variant <variant>` where `<variant>` is `quantized` or `full`
-- `--endpoint <url>`
-- `--api-key-env <env-var>`
-- `--dimensions <usize>`
-- `--model-cache <scope>` where `<scope>` is `global` or `project`
-- `--install-models`
-- `--index`
-- `--force`
-- `--dry-run`
+Presets: `local`, `code`, `docs`, `ollama`, `openai`, `custom`, `keyword`.
 
-Plain `enf init` creates the default native SQLite project:
+Examples:
 
-```text
-enf init --db=sqlite --provider native --model nomic-embed-text-v1.5 --variant quantized
+```sh
+enf init
+enf init --yes --preset local --index
+enf init --no-input --preset keyword
+enf init --preset openai --api-key-env OPENAI_API_KEY --index
 ```
 
-Native init records the active model profile. Published Linux x64 release
-binaries include the native Candle embedding runtime for local embeddings.
+## `setup`
+
+```text
+enf setup
+enf setup presets [--json]
+enf setup preset <preset> [--json]
+enf setup use <preset> [--endpoint <url>] [--api-key-env <env>] [--model <model>] [--dimensions <n>] [--dry-run] [--json]
+enf setup reranker [--endpoint <url>] [--model <model>] [--candidate-limit <n>] [--off] [--schema] [--dry-run] [--json]
+enf setup images [--endpoint <url>] [--query-endpoint <url>] [--model <model>] [--dimensions <n>] [--off] [--dry-run] [--json]
+enf setup fallback [--provider <provider>] [--endpoint <url>] [--api-key-env <env>] [--off] [--dry-run] [--json]
+enf setup search [--mode <hybrid|vector|keyword>] [--level <chunk|file|both>] [--limit <n>] [--dry-run] [--json]
+```
+
+Use `setup` when changing provider/model choices or optional endpoint-backed
+features. Reranker and visual image search require external HTTP services; ENF
+does not ship those servers.
+
+## `config`
+
+```text
+enf config path [--json]
+enf config show [section] [--json]
+enf config explain [key]
+enf config validate [--json]
+enf config edit
+enf config set <key> <value> [--dry-run] [--json]
+enf config diff --preset <preset>
+enf config doctor [--json]
+```
+
+`config set` supports safe provider/search/reranker/image keys. For unsupported
+keys, ENF prints the config path and directs you to edit TOML directly.
+
+Precedence:
+
+1. Command-line flags
+2. Environment variables
+3. `.enf.local.toml`
+4. `.enf.toml`
+5. ENF defaults
 
 ## `models`
 
-Manage the active embedding profile.
-
 ```text
-enf models <subcommand>
+enf models list [--json]
+enf models current [--json]
+enf models install [model] [--variant <quantized|full>] [--json] [--dry-run]
+enf models path [--json]
+enf models clean [--json] [--dry-run]
 ```
 
-Subcommands:
-
-- `list`:
-  ```text
-  enf models list [--json]
-  ```
-- `current`:
-  ```text
-  enf models current [--json]
-  ```
-- `install`:
-  ```text
-  enf models install [model] [--variant <variant>] [--json] [--dry-run]
-  ```
-  - `model` positional argument is optional
-  - Captures the active profile hash and cache marker state for the resolved cache scope.
-- `cache-path`:
-  ```text
-  enf models cache-path [--json]
-  ```
-- `gc`:
-  ```text
-  enf models gc [--json] [--dry-run]
-  ```
+`list` describes available packaged/local model choices. `current` shows the
+active project profile. `path` prints the resolved model cache path.
 
 ## `index`
 
-Index files into the local SQLite database.
-
 ```text
-enf index [path] [--reembed] [--changed-only] [--install-models] [--no-embed] [--provider <provider>] [--model <model>] [--variant <variant>] [--endpoint <url>] [--api-key-env <env-var>] [--dimensions <usize>] [--json] [--dry-run]
+enf index [path] [--reembed] [--changed] [--install-models]
+         [--no-embeddings] [--provider <provider>] [--model <model>]
+         [--endpoint <url>] [--api-key-env <env>] [--dimensions <n>]
+         [--json] [--dry-run]
 ```
 
-Flags:
+Examples:
 
-- `path` positional path (default: `.`)
-- `--reembed`
-- `--changed-only`
-- `--install-models`
-- `--no-embed`
-- `--json`
-- `--dry-run`
-- Provider overrides:
-  - `--provider <provider>`
-  - `--model <string>`
-  - `--variant <variant>` (`quantized` | `full`)
-  - `--endpoint <url>`
-  - `--api-key-env <env-var>`
-  - `--dimensions <usize>`
-
-Notes:
-- Native `init` installs the active model profile by default.
-- `index` embeds text chunks for the active profile and fails if the native
-  model profile is missing.
-- Image files are discovered through `[image.include]`; image embeddings are
-  created only when `[image.embedding].enabled = true`.
-- `--no-embed` intentionally skips text and image embedding for metadata-only indexing.
-- Explicit file paths must match text or image include configuration and must
-  not be excluded.
-- `.enfignore` at the project root uses gitignore-style patterns.
-- `.enfignoredir` inside a directory skips that directory and all descendants.
-
-## `add`
-
-Index an explicit file or directory path.
-
-```text
-enf add <path> [same options as index]
+```sh
+enf index .
+enf index docs --changed
+enf index . --reembed
+enf index . --no-embeddings
 ```
 
-`add` is an alias for explicit indexing. It is useful for custom file types such
-as `.ehmeta`.
-
-## `remove`
-
-Remove an indexed file path from SQLite without deleting it from disk.
-
-```text
-enf remove <path> [--dry-run]
-```
-
-- `--dry-run`
+`--no-embeddings` indexes metadata/text without embedding vectors. Use it for
+keyword-only workflows or quick CI checks.
 
 ## `search`
 
-Run a query with default output (path list) or JSON output.
-
 ```text
-enf search <query> [--mode <mode>] [--level <level>] [--kind <kind>] [--filetype <ext>]... [--path <glob>]... [--limit <usize>] [--cached-query-only] [--provider <provider>] [--model <model>] [--variant <variant>] [--endpoint <url>] [--api-key-env <env-var>] [--dimensions <usize>] [--json]
+enf search <query> [--mode <hybrid|vector|keyword>] [--level <chunk|file|both>]
+                  [--kind <all|text|image>] [--filetype <ext>]... [--path <glob>]...
+                  [--limit <n>] [--cached-query-only] [--compact] [--full]
+                  [--explain] [--json] [--jsonl]
 ```
 
-`retrieve` uses the same options as `search` and always prints JSON result payload.
-
-Flags:
-
-- `query` (required positional query string)
-- `--mode <mode>` where `<mode>` is `hybrid`, `vector`, or `keyword`
-- `--level <level>` where `<level>` is `chunk`, `file`, or `both`
-- `--kind <kind>` where `<kind>` is `all`, `text`, or `image`
-- `--filetype <ext>` repeatable, matched case-insensitively without requiring a leading dot
-- `--path <glob>` repeatable path glob filter
-- `--limit <usize>`
-- `--cached-query-only`
-- `--json`
-- Provider overrides: same as `index`
-
-Notes:
-- When stored chunk embeddings exist for the active profile, search/retrieve use
-  hybrid ranking over vector similarity, keyword score, and metadata score.
-- When `[image.embedding].enabled = true`, local images are sent to the
-  configured endpoint as raw base64 strings and stored for future compatible
-  image search. Current `--kind image` search uses path/metadata matching; image
-  vector search is disabled until a text-to-image query embedding endpoint is
-  configured. The compatible port 41802 wrapper returns
-  `open_clip/ViT-H-14:laion2b_s32b_b79k` 1024-dimensional vectors.
-- Filters are applied before final top-k and before optional reranking.
-- When `[reranker].enabled = true`, filtered candidates are reranked by the
-  configured `POST /rerank` endpoint.
-- Query embeddings are cached by normalized query. `--cached-query-only` fails if
-  the query vector is not already cached for the active profile.
-- Plain text output wraps file paths in OSC 8 terminal hyperlinks when supported.
+`search` is optimized for humans. Default output includes ranked paths, line
+ranges, scores, snippets, and short reason hints. Use `--compact` for paths and
+scores only, `--full` for full stored snippets, and `--explain` for score
+components.
 
 ## `retrieve`
 
 ```text
-enf retrieve <query> [same options as search]
+enf retrieve <query> [same filters as search] [--jsonl]
 ```
 
-Notes:
+`retrieve` is optimized for agents, scripts, and RAG. Default output is pretty
+JSON with this stable shape:
 
-- At runtime `search` and `retrieve` both dispatch to the same internal search command,
-  with `retrieve` enabling JSON output.
+```json
+{
+  "schema_version": "1",
+  "query": "where is player inventory saved",
+  "mode": "hybrid",
+  "level": "chunk",
+  "profile": {
+    "provider": "native",
+    "engine": "candle",
+    "model": "nomic-embed-text-v1.5",
+    "variant": "quantized",
+    "dimensions": 768,
+    "hash": "..."
+  },
+  "warnings": [],
+  "results": [
+    {
+      "rank": 1,
+      "path": "src/save.rs",
+      "source_uri": "file:///project/src/save.rs#L10",
+      "kind": "text",
+      "level": "chunk",
+      "start_line": 10,
+      "end_line": 40,
+      "text": "...",
+      "snippet": "...",
+      "score": 0.82,
+      "scores": {
+        "vector": 0.8,
+        "keyword": 0.5,
+        "metadata": 0.1,
+        "rerank": null
+      },
+      "file_type": "rs"
+    }
+  ]
+}
+```
 
-## `status`
+## `status` and `doctor`
 
 ```text
 enf status [--json]
+enf doctor [--ci] [--fix] [--yes] [--check <name>] [--no-embeddings]
+           [--install-models] [--dry-run] [--json]
 ```
 
-- `--json`
-
-## `doctor`
-
-```text
-enf doctor [--json]
-```
-
-- `--json`
-
-## `ci`
-
-```text
-enf ci [--no-embed] [--install-models] [--json] [--dry-run]
-```
-
-- `--no-embed`
-- `--install-models`
-- `--json`
-- `--dry-run`
+`status` answers “can I search successfully?” `doctor` answers “what is broken
+and what exact command fixes it?” Use `doctor --ci` in automation.
 
 ## `update`
 
-Update the installed `enf` executable using the release installer.
-
 ```text
-enf update [--version <tag>] [--install-dir <path>] [--method <binary|cargo>] [--repo <owner/name>] [--dry-run]
+enf update [--version <tag>] [--install-dir <path>] [--method <binary|cargo>]
+           [--repo <owner/name>] [--dry-run]
 ```
 
-Flags:
-
-- `--version <tag>`
-- `--install-dir <path>`
-- `--method <binary|cargo>`
-- `--repo <owner/name>`
-- `--dry-run`

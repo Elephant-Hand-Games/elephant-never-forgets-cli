@@ -32,7 +32,7 @@ fn setup_indexed_project() -> tempfile::TempDir {
         .success();
     enf()
         .current_dir(temp.path())
-        .args(["index", "--no-embed", "."])
+        .args(["index", "--no-embeddings", "."])
         .assert()
         .success()
         .stdout(predicate::str::contains("Indexed"));
@@ -46,7 +46,7 @@ fn setup_indexed_project_with_image() -> tempfile::TempDir {
     std::fs::write(temp.path().join("assets/logo.png"), b"fake png bytes").unwrap();
     enf()
         .current_dir(temp.path())
-        .args(["index", "--no-embed", "."])
+        .args(["index", "--no-embeddings", "."])
         .assert()
         .success();
     temp
@@ -207,7 +207,7 @@ fn file_level_search_returns_file_results() {
     let json: Value = serde_json::from_slice(&output).unwrap();
 
     assert_eq!(json["results"][0]["level"], "file");
-    assert_eq!(json["results"][0]["kind"], "file");
+    assert_eq!(json["results"][0]["kind"], "text");
     assert_eq!(json["results"][0]["path"], "README.md");
 }
 
@@ -236,14 +236,14 @@ fn provider_overrides_use_a_distinct_profile_for_search() {
     let json: Value = serde_json::from_slice(&output).unwrap();
 
     assert_ne!(
-        json["profile_hash"].as_str().unwrap(),
+        json["profile"]["hash"].as_str().unwrap(),
         default_profile.profile_hash
     );
     assert!(json["warnings"][0]
         .as_str()
         .unwrap()
         .contains("has no indexed embeddings"));
-    assert_eq!(json["results"][0]["mode"], "keyword");
+    assert_eq!(json["mode"], "hybrid");
 }
 
 #[test]
@@ -297,9 +297,9 @@ fn cached_query_only_succeeds_with_seeded_query_cache() {
 
     assert_eq!(json["query"], "zebra");
     assert_eq!(json["results"][0]["path"], "docs/agents.md");
-    assert_eq!(json["results"][0]["mode"], "vector");
+    assert_eq!(json["mode"], "vector");
     assert_eq!(json["results"][0]["level"], "chunk");
-    assert_eq!(json["results"][0]["vector_score"], 1.0);
+    assert_eq!(json["results"][0]["scores"]["vector"], 1.0);
 }
 
 #[test]
@@ -362,9 +362,9 @@ fn vector_file_level_aggregates_seeded_chunk_vectors() {
     let json: Value = serde_json::from_slice(&output).unwrap();
 
     assert_eq!(json["results"][0]["path"], "docs/agents.md");
-    assert_eq!(json["results"][0]["mode"], "vector");
+    assert_eq!(json["mode"], "vector");
     assert_eq!(json["results"][0]["level"], "file");
-    assert_eq!(json["results"][0]["vector_score"], 1.0);
+    assert_eq!(json["results"][0]["scores"]["vector"], 1.0);
 }
 
 #[test]
@@ -414,9 +414,9 @@ fn search_kind_image_vector_uses_cached_query_embedding() {
 
     assert_eq!(json["results"][0]["kind"], "image");
     assert_eq!(json["results"][0]["path"], "assets/logo.png");
-    assert_eq!(json["results"][0]["mode"], "vector");
+    assert_eq!(json["mode"], "vector");
     assert_eq!(json["results"][0]["level"], "image");
-    assert_eq!(json["results"][0]["vector_score"], 1.0);
+    assert_eq!(json["results"][0]["scores"]["vector"], 1.0);
 }
 
 #[test]

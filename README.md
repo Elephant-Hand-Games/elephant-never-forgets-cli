@@ -28,7 +28,7 @@ run the `export PATH=...` command printed by the installer.
 Install a specific release tag:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Elephant-Hand-Games/elephant-never-forgets-cli/main/scripts/install.sh | ENF_VERSION=v1.3.1 sh
+curl -fsSL https://raw.githubusercontent.com/Elephant-Hand-Games/elephant-never-forgets-cli/main/scripts/install.sh | ENF_VERSION=v2.0.0 sh
 ```
 
 Install somewhere else:
@@ -77,27 +77,43 @@ enf update --dry-run
 
 ## Command Workflows
 
-### Install
+### Set Up A Project
 
 ```sh
 enf init
-enf init --db=sqlite
-enf init --db=false
+enf init --yes --preset local --index
+enf init --no-input --preset keyword
 enf init --dry-run
-enf init --db --provider openai --model text-embedding-3-small --index
-enf init --db --provider ollama --model nomic-embed-text
-enf init --db --force --provider native
+enf init --preset openai --api-key-env OPENAI_API_KEY --index
 ```
 
 Plain `enf init` is equivalent to:
 
 ```sh
-enf init --db=sqlite --provider native --model nomic-embed-text-v1.5 --variant quantized
+enf init --preset local
 ```
 
-Native projects install the active model profile during initialization. Use
-`--db=false` only when `.enf/index.sqlite` already exists and you want init to
-write/refresh config without creating the database.
+In a terminal, `enf init` guides setup with plain-English choices. In CI or any
+non-TTY environment, it never prompts; use `--yes`, `--no-input`, and explicit
+flags. Native projects install the active model profile during initialization.
+Use `--no-db` only when `.enf/index.sqlite` already exists and you want init to
+write/refresh config without creating the database. The legacy `--db=false`
+spelling still works but is hidden from help.
+
+### Change Setup
+
+```sh
+enf setup
+enf setup presets
+enf setup preset local
+enf setup use local
+enf setup use openai --api-key-env OPENAI_API_KEY
+enf setup reranker --endpoint http://localhost:8080/rerank
+enf setup images --endpoint http://localhost:8081/embed-images --query-endpoint http://localhost:8081/embed-query
+```
+
+Presets are first-class product modes: `local`, `code`, `docs`, `ollama`,
+`openai`, `custom`, and `keyword`.
 
 ### Model
 
@@ -106,32 +122,31 @@ enf models list
 enf models current --json
 enf models install
 enf models install --dry-run
-enf models cache-path
-enf models gc
+enf models path
+enf models clean
 ```
 
 ### Index
 
 ```sh
 enf index .
-enf add ./file.ehmeta
-enf remove ./old-note.md
 enf index . --dry-run
 enf index ./docs --reembed --json
-enf index ./notes --changed-only
-enf index --no-embed ./docs
+enf index ./notes --changed
+enf index ./docs --no-embeddings
+enf remove ./old-note.md
 ```
 
 `index` embeds chunks for the active profile. For the native provider, indexing
 fails if the active model profile is missing; run `enf models install` to repair
-an older project. Use `--no-embed` only for metadata-only indexing. Indexed text
-metadata includes relative path, file type/extension, size, modified time, hash,
-full text when enabled, chunks, line ranges, token counts, and embeddings.
+an older project. Use `--no-embeddings` only for metadata-only indexing. Indexed
+text metadata includes relative path, file type/extension, size, modified time,
+hash, full text when enabled, chunks, line ranges, token counts, and embeddings.
 Image files are indexed when they match `[image.include]`; image embeddings are
-only created when `[image.embedding].enabled = true`. `add` indexes an explicit
-file or directory path only when it is included by the text or image include
-configuration and not excluded. `remove` deletes a file path from the index
-without deleting it from disk.
+only created when `[image.embedding].enabled = true`. Hidden compatibility
+aliases such as `add`, `remove`, and `ci` still work, but the v2 help keeps the
+main surface focused. `remove` deletes a file path from the index without
+deleting it from disk.
 
 `enf` also reads `.enfignore` at the project root using gitignore-style patterns.
 Place `.enfignoredir` inside a directory to skip that directory and all of its
@@ -143,19 +158,26 @@ subdirectories during discovery.
 enf search "where are the agent editing rules?"
 enf search "release notes" --mode hybrid --level chunk --limit 20
 enf search "logo" --kind image --filetype png --path 'assets/**'
-enf retrieve "debugging command output" --json
+enf search "save bug" --explain
+enf retrieve "debugging command output"
+enf retrieve "debugging command output" --jsonl
 ```
 
-Plain text search output wraps matched file paths in local terminal hyperlinks
-when your terminal supports OSC 8 links. Mixed results are labeled as `[text]`
-or `[image]`; JSON results include `kind`, `file_type`, and optional
-`rerank_score`.
+Plain text search output is for humans: ranked paths, line ranges, scores,
+snippets, and short “why” hints. `retrieve` is for agents and RAG: stable JSON
+with `schema_version`, query metadata, active profile, warnings, source URIs,
+result text/snippets, and score components. Human warnings go to stderr; JSON
+stdout stays machine-readable.
 
 Search filters:
 
 - `--kind all|text|image`
 - `--filetype <ext>` repeatable, with or without a leading dot
 - `--path <glob>` repeatable
+- `--compact`
+- `--full`
+- `--explain`
+- `--jsonl`
 
 ### Status / Doctor / CI
 
@@ -163,25 +185,41 @@ Search filters:
 enf status
 enf status --json
 enf doctor
-enf ci --install-models --json
-enf ci --no-embed
+enf doctor --ci --install-models --json
+enf doctor --ci --no-embeddings
 ```
+
+`status` answers whether the project is ready to search. `doctor` explains what
+is broken and prints exact repair commands. The old `enf ci` command remains as
+a hidden alias for CI checks.
+
+### Config
+
+```sh
+enf config path
+enf config show
+enf config show embedding
+enf config explain reranker.endpoint
+enf config set search.limit 20
+enf config validate
+enf config edit
+enf config diff --preset openai
+```
+
+`.enf.toml` is the shared project config. `.enf.local.toml` is ignored by
+default and can hold machine-local endpoints, API env names, reranker settings,
+and image embedding settings.
 
 ## Provider Examples
 
 Provider setup can be written during init, then overridden per indexing or
 search command when needed.
 
-- Native (Candle profile target):
-  `enf init --db --provider native --model nomic-embed-text-v1.5 --variant quantized`
-- Ollama:
-  `enf init --db --provider ollama --model nomic-embed-text`
-- OpenAI:
-  `enf init --db --provider openai --model text-embedding-3-small`
-- OpenAI-compatible:
-  `enf init --db --provider openai-compatible --endpoint https://provider.example.com/v1/embeddings`
-- Generic HTTP:
-  `enf init --db --provider http --model custom --endpoint https://api.example.com/embeddings --dimensions 1024`
+- Native: `enf setup use local`
+- Ollama: `enf setup use ollama --endpoint http://localhost:11434/api/embed`
+- OpenAI: `enf setup use openai --api-key-env OPENAI_API_KEY`
+- OpenAI-compatible: `enf setup use custom --endpoint https://provider.example.com/v1/embeddings`
+- Generic HTTP: `enf config set embedding.provider http`, then set model/endpoint/dimensions
 
 Optional endpoint-backed features are configured in `.enf.toml`:
 
@@ -255,7 +293,7 @@ custom HTTP embedding endpoints.
   then writes/updates the cache marker under the resolved model cache path.
 - `enf index <path>` embeds missing chunks for the active profile.
 - Published Linux x64 release binaries include the native Candle runtime.
-- `enf index --no-embed <path>` skips embedding and is intended only for
+- `enf index --no-embeddings <path>` skips embedding and is intended only for
   metadata-only workflows.
 - `enf search` and `enf retrieve` combine keyword matches with stored chunk vectors
   when embeddings exist, cache query embeddings by normalized query, and continue

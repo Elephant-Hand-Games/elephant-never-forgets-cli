@@ -1,8 +1,10 @@
-use std::io::{self, IsTerminal, Write};
+use std::io::{self, IsTerminal};
 use std::{fs, path::PathBuf};
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+
+use dialoguer::{Confirm, Input, Select};
 
 use crate::{
     cli::{
@@ -14,6 +16,7 @@ use crate::{
 };
 
 pub const CONFIG_FILE: &str = ".enf.toml";
+pub const LOCAL_CONFIG_FILE: &str = ".enf.local.toml";
 pub const STATE_DIR: &str = ".enf";
 pub const DB_PATH: &str = ".enf/index.sqlite";
 pub const CACHE_DIR: &str = ".enf/cache";
@@ -419,14 +422,19 @@ pub fn init(args: InitArgs) -> Result<()> {
         .into());
     }
 
+    let interactive = should_prompt_for_init(&args);
+    if interactive {
+        print_interactive_init_intro(&cwd);
+    }
+
     let config = init_config(&args);
     validate(&config)?;
-    let db_enabled = args.db == DbArg::Sqlite;
+    let db_enabled = args.db == DbArg::Sqlite && !args.no_db;
     let db_path = cwd.join(&config.state.db_path);
 
     if !db_enabled && !db_path.exists() {
         anyhow::bail!(
-            "--db=false requires an existing database at {}; use `enf init` or `enf init --db=sqlite` to create one",
+            "--no-db requires an existing database at {}; use `enf init` or `enf init --db=sqlite` to create one",
             config.state.db_path
         );
     }
@@ -435,7 +443,8 @@ pub fn init(args: InitArgs) -> Result<()> {
     }
 
     if args.dry_run {
-        println!("Dry run: would initialize Elephant Never Forgets project");
+        println!("Plan");
+        println!("  Create {CONFIG_FILE}");
         println!("  config: {}", CONFIG_FILE);
         if db_enabled {
             println!("  database: {}", config.state.db_path);
@@ -492,15 +501,63 @@ pub fn init(args: InitArgs) -> Result<()> {
         )?;
     }
 
-    println!("✓ Initialized Elephant Never Forgets project");
-    println!("✓ Config: {}", CONFIG_FILE);
+    println!("✓ Wrote {CONFIG_FILE}");
     if db_enabled {
-        println!("✓ Database: {}", config.state.db_path);
+        println!("✓ Prepared SQLite index at {}", config.state.db_path);
     } else {
         println!("✓ Database: existing database required, creation skipped");
     }
-    println!("✓ Provider: {}", config.embedding.provider.as_str());
+    println!("✓ Provider: {}", provider_label(&config));
+    println!();
+    println!("Ready.");
+    println!();
+    println!("Try:");
+    println!("  enf search \"your query\"");
+    println!("  enf status");
     Ok(())
+}
+
+fn should_prompt_for_init(args: &InitArgs) -> bool {
+    (args.interactive || (!args.no_input && !args.yes && args.preset.is_none()))
+        && io::stdin().is_terminal()
+        && io::stdout().is_terminal()
+}
+
+fn print_interactive_init_intro(cwd: &std::path::Path) {
+    println!("Elephant Never Forgets");
+    println!("Set up semantic search for this project.");
+    println!();
+    println!("Project");
+    println!("  Folder: {}", cwd.display());
+    println!("  Config: {CONFIG_FILE}");
+    println!("  Index:  {DB_PATH}");
+    println!();
+    println!("Using recommended local preset. Change it later with `enf setup`.");
+    println!();
+}
+
+fn provider_label(config: &Config) -> String {
+    match config.embedding.provider {
+        Provider::Native => format!("local packaged model / {}", config.embedding.model),
+        Provider::Ollama => format!(
+            "Ollama / {}",
+            config
+                .embedding
+                .endpoint
+                .as_deref()
+                .unwrap_or("http://localhost:11434/api/embed")
+        ),
+        Provider::Openai => format!(
+            "OpenAI / {}",
+            config
+                .embedding
+                .api_key_env
+                .as_deref()
+                .unwrap_or("OPENAI_API_KEY")
+        ),
+        Provider::OpenaiCompatible => "OpenAI-compatible HTTP endpoint".into(),
+        Provider::Http => "custom HTTP endpoint".into(),
+    }
 }
 
 fn native_candle_available() -> bool {
@@ -508,7 +565,11 @@ fn native_candle_available() -> bool {
 }
 
 pub fn init_config(args: &InitArgs) -> Config {
-    let mut config = Config::default();
+    let mut config = args
+        .preset
+        .clone()
+        .map(crate::setup::preset_config)
+        .unwrap_or_default();
     apply_init_overrides(&mut config, args);
     config
 }
@@ -521,9 +582,139 @@ pub fn load() -> Result<Config> {
     let text = fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
     let mut config: Config =
         toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
+    apply_local_overrides(&mut config)?;
     apply_legacy_pattern_compat(&mut config);
     validate(&config)?;
     Ok(config)
+}
+
+fn apply_local_overrides(config: &mut Config) -> Result<()> {
+    let path = std::env::current_dir()?.join(LOCAL_CONFIG_FILE);
+    if !path.exists() {
+        return Ok(());
+    }
+    let text = fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
+    let value: toml::Value =
+        toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
+
+    if let Some(embedding) = value.get("embedding").and_then(toml::Value::as_table) {
+        if let Some(provider) = table_str(embedding, "provider") {
+            config.embedding.provider = parse_provider_value(provider)?;
+        }
+        if let Some(engine) = table_optional_str(embedding, "engine") {
+            config.embedding.engine = engine;
+        }
+        if let Some(model) = table_str(embedding, "model") {
+            config.embedding.model = model.to_string();
+        }
+        if let Some(variant) = table_optional_str(embedding, "variant") {
+            config.embedding.variant = variant
+                .as_deref()
+                .map(parse_variant_value)
+                .transpose()
+                .with_context(|| format!("parsing {LOCAL_CONFIG_FILE} embedding.variant"))?;
+        }
+        if let Some(endpoint) = table_optional_str(embedding, "endpoint") {
+            config.embedding.endpoint = endpoint;
+        }
+        if let Some(api_key_env) = table_optional_str(embedding, "api_key_env") {
+            config.embedding.api_key_env = api_key_env;
+        }
+        if let Some(dimensions) = table_usize(embedding, "dimensions")? {
+            config.embedding.dimensions = dimensions;
+        }
+    }
+
+    if let Some(search) = value.get("search").and_then(toml::Value::as_table) {
+        if let Some(mode) = table_str(search, "default_mode") {
+            config.search.default_mode = parse_search_mode_value(mode)?;
+        }
+        if let Some(level) = table_str(search, "default_level") {
+            config.search.default_level = parse_search_level_value(level)?;
+        }
+        if let Some(limit) = table_usize(search, "limit")? {
+            config.search.limit = limit;
+        }
+    }
+
+    if let Some(reranker) = value.get("reranker").and_then(toml::Value::as_table) {
+        if let Some(enabled) = table_bool(reranker, "enabled")? {
+            config.reranker.enabled = enabled;
+        }
+        if let Some(endpoint) = table_optional_str(reranker, "endpoint") {
+            config.reranker.endpoint = endpoint;
+        }
+        if let Some(model) = table_str(reranker, "model") {
+            config.reranker.model = model.to_string();
+        }
+        if let Some(candidate_limit) = table_usize(reranker, "candidate_limit")? {
+            config.reranker.candidate_limit = candidate_limit;
+        }
+    }
+
+    if let Some(image) = value
+        .get("image")
+        .and_then(|image| image.get("embedding"))
+        .and_then(toml::Value::as_table)
+    {
+        if let Some(enabled) = table_bool(image, "enabled")? {
+            config.image.embedding.enabled = enabled;
+        }
+        if let Some(endpoint) = table_optional_str(image, "endpoint") {
+            config.image.embedding.endpoint = endpoint;
+        }
+        if let Some(query_endpoint) = table_optional_str(image, "query_endpoint") {
+            config.image.embedding.query_endpoint = query_endpoint;
+        }
+        if let Some(model) = table_str(image, "model") {
+            config.image.embedding.model = model.to_string();
+        }
+        if let Some(dimensions) = table_usize(image, "dimensions")? {
+            config.image.embedding.dimensions = dimensions;
+        }
+    }
+
+    Ok(())
+}
+
+fn table_str<'a>(table: &'a toml::map::Map<String, toml::Value>, key: &str) -> Option<&'a str> {
+    table.get(key).and_then(toml::Value::as_str)
+}
+
+fn table_optional_str(
+    table: &toml::map::Map<String, toml::Value>,
+    key: &str,
+) -> Option<Option<String>> {
+    table.get(key).map(|value| {
+        value
+            .as_str()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+    })
+}
+
+fn table_usize(table: &toml::map::Map<String, toml::Value>, key: &str) -> Result<Option<usize>> {
+    table
+        .get(key)
+        .map(|value| {
+            value
+                .as_integer()
+                .and_then(|value| usize::try_from(value).ok())
+                .with_context(|| format!("{key} must be a non-negative integer"))
+        })
+        .transpose()
+}
+
+fn table_bool(table: &toml::map::Map<String, toml::Value>, key: &str) -> Result<Option<bool>> {
+    table
+        .get(key)
+        .map(|value| {
+            value
+                .as_bool()
+                .with_context(|| format!("{key} must be true or false"))
+        })
+        .transpose()
 }
 
 pub fn write_config(path: &std::path::Path, config: &Config) -> Result<()> {
@@ -535,12 +726,34 @@ fn format_config(config: &Config) -> Result<String> {
     let text = toml::to_string_pretty(config).context("serializing config")?;
     Ok(format!(
         "# Elephant Never Forgets project configuration\n\
-         # Plain `enf init` creates this native SQLite setup:\n\
-         #   enf init --db=sqlite --provider native --model nomic-embed-text-v1.5 --variant quantized\n\
-         # Native projects use Candle locally. Remote providers can override provider/model/endpoint/api_key_env.\n\
-         # state.db_path is the project SQLite index; state.model_cache controls where native model assets are cached.\n\
-         # text/image include settings control discoverable file types. search weights control hybrid ranking.\n\
-         # Reranking and image embeddings are optional endpoint-backed features.\n\n\
+         #\n\
+         # This file controls what ENF indexes, how embeddings are created, and how\n\
+         # search results are ranked. It is safe to edit by hand.\n\
+         #\n\
+         # Common commands:\n\
+         #   enf status                 Show whether this setup is ready\n\
+         #   enf doctor                 Diagnose problems in this file and the index\n\
+         #   enf config explain <key>   Explain an important setting\n\
+         #   enf setup                  Change provider/model/features interactively\n\
+         #\n\
+         # Commit this file if the team should share ENF settings.\n\
+         # Do not commit .enf/; it contains the local SQLite index and cache.\n\
+         # Put machine-local overrides and secrets in .enf.local.toml.\n\
+         #\n\
+         # Presets:\n\
+         #   enf setup presets\n\
+         #   enf setup use local|code|docs|ollama|openai|custom|keyword\n\
+         #\n\
+         # Provider options:\n\
+         #   native              packaged local embeddings, no API key or server\n\
+         #   ollama              Ollama /api/embed endpoint\n\
+         #   openai              OpenAI embeddings endpoint\n\
+         #   openai-compatible   any OpenAI-shaped embeddings endpoint\n\
+         #   http                ENF custom embeddings response shape\n\
+         #\n\
+         # Optional endpoint-backed features:\n\
+         #   enf setup reranker  Configure search result reranking\n\
+         #   enf setup images    Configure visual image search\n\n\
          {text}"
     ))
 }
@@ -838,7 +1051,8 @@ fn validate_non_negative_weight(field: &str, value: f32) -> Result<()> {
 }
 
 fn apply_init_overrides(config: &mut Config, args: &InitArgs) {
-    let interactive = if args.interactive {
+    let wants_interactive = should_prompt_for_init(args);
+    let interactive = if wants_interactive {
         interactive_init_defaults(config)
     } else {
         Ok(InteractiveInitDefaults::default())
@@ -847,7 +1061,7 @@ fn apply_init_overrides(config: &mut Config, args: &InitArgs) {
     let interactive = match interactive {
         Ok(values) => values,
         Err(err) => {
-            if args.interactive {
+            if wants_interactive {
                 log_interactive_warning(&err);
                 InteractiveInitDefaults::default()
             } else {
@@ -1085,67 +1299,82 @@ fn run_interactive_init_prompt(config: &Config) -> Result<InteractiveInitDefault
     }
     let mut answers = InteractiveInitDefaults::default();
 
-    let provider = prompt_line(
-        "Embedding provider (native/ollama/openai/openai-compatible/http)",
-        None,
-    )?;
-    if !provider.trim().is_empty() {
-        answers.provider = Some(
-            parse_provider_arg(&provider)
-                .with_context(|| format!("invalid provider: {provider}"))?,
-        );
-    }
+    let provider_items = [
+        "Local packaged model",
+        "Ollama",
+        "OpenAI",
+        "Custom OpenAI-compatible endpoint",
+        "Custom ENF HTTP endpoint",
+        "Keyword only",
+    ];
+    let provider = Select::new()
+        .with_prompt("Embeddings")
+        .items(&provider_items)
+        .default(0)
+        .interact()?;
+    answers.provider = match provider {
+        0 | 5 => Some(ProviderArg::Native),
+        1 => Some(ProviderArg::Ollama),
+        2 => Some(ProviderArg::Openai),
+        3 => Some(ProviderArg::OpenaiCompatible),
+        4 => Some(ProviderArg::Http),
+        _ => None,
+    };
 
-    let model = prompt_line(
-        &format!("Model [{}]", config.embedding.model.as_str()),
-        Some(config.embedding.model.as_str()),
-    )?;
-    if !model.trim().is_empty() {
-        answers.model = Some(model);
-    }
+    let model_items = ["Nomic Embed Text v1.5", "EmbeddingGemma 300M", "Custom"];
+    let model_choice = Select::new()
+        .with_prompt("Local model")
+        .items(&model_items)
+        .default(0)
+        .interact()?;
+    answers.model = Some(match model_choice {
+        0 => "nomic-embed-text-v1.5".into(),
+        1 => "google/embeddinggemma-300m".into(),
+        _ => Input::new()
+            .with_prompt("Model")
+            .default(config.embedding.model.clone())
+            .interact_text()?,
+    });
 
-    let chunking = prompt_line("Chunking mode [smart/line-window/off]", Some("smart"))?;
-    if !chunking.trim().is_empty() {
-        answers.chunking = Some(parse_chunking_arg(&chunking).context("invalid chunking mode")?);
-    }
+    let chunking_items = ["Smart", "Line window", "Off"];
+    let chunking = Select::new()
+        .with_prompt("Chunking")
+        .items(&chunking_items)
+        .default(0)
+        .interact()?;
+    answers.chunking = Some(match chunking {
+        0 => ChunkingModeArg::Smart,
+        1 => ChunkingModeArg::LineWindow,
+        _ => ChunkingModeArg::Off,
+    });
 
-    let fallback_provider = prompt_line(
-        "Fallback provider [native/openai-compatible/http/ollama/openai] (empty to skip)",
-        None,
-    )?;
-    if !fallback_provider.trim().is_empty() {
+    if Confirm::new()
+        .with_prompt("Configure fallback provider now?")
+        .default(false)
+        .interact()?
+    {
+        let fallback_provider: String = Input::new()
+            .with_prompt("Fallback provider")
+            .default("ollama".into())
+            .interact_text()?;
         answers.fallback_provider = Some(parse_provider_arg(&fallback_provider)?);
-    }
-
-    let fallback_endpoint = prompt_line("Fallback endpoint (empty to use provider default)", None)?;
-    if !fallback_endpoint.trim().is_empty() {
-        answers.fallback_endpoint = Some(fallback_endpoint);
-    }
-
-    let fallback_api_key_env = prompt_line("Fallback API key env (optional)", None)?;
-    if !fallback_api_key_env.trim().is_empty() {
-        answers.fallback_api_key_env = Some(fallback_api_key_env);
+        let fallback_endpoint: String = Input::new()
+            .with_prompt("Fallback endpoint")
+            .allow_empty(true)
+            .interact_text()?;
+        if !fallback_endpoint.trim().is_empty() {
+            answers.fallback_endpoint = Some(fallback_endpoint);
+        }
+        let fallback_api_key_env: String = Input::new()
+            .with_prompt("Fallback API key env")
+            .allow_empty(true)
+            .interact_text()?;
+        if !fallback_api_key_env.trim().is_empty() {
+            answers.fallback_api_key_env = Some(fallback_api_key_env);
+        }
     }
 
     Ok(answers)
-}
-
-fn prompt_line(prompt: &str, default: Option<&str>) -> Result<String> {
-    print!("{prompt}");
-    if let Some(default) = default {
-        print!(" [{}]", default);
-    }
-    print!(": ");
-    io::stdout().flush()?;
-    let mut value = String::new();
-    io::stdin()
-        .read_line(&mut value)
-        .with_context(|| format!("reading input for interactive init prompt {prompt:?}"))?;
-    let value = value.trim().to_string();
-    if value.is_empty() {
-        return Ok(default.unwrap_or("").to_string());
-    }
-    Ok(value)
 }
 
 fn parse_provider_arg(value: &str) -> Result<ProviderArg> {
@@ -1159,12 +1388,33 @@ fn parse_provider_arg(value: &str) -> Result<ProviderArg> {
     }
 }
 
-fn parse_chunking_arg(value: &str) -> Result<ChunkingModeArg> {
-    match value.to_lowercase().as_str() {
-        "smart" => Ok(ChunkingModeArg::Smart),
-        "line-window" | "line_window" | "line" => Ok(ChunkingModeArg::LineWindow),
-        "off" => Ok(ChunkingModeArg::Off),
-        _ => anyhow::bail!("expected smart, line-window, or off"),
+fn parse_provider_value(value: &str) -> Result<Provider> {
+    Ok(parse_provider_arg(value)?.into())
+}
+
+fn parse_variant_value(value: &str) -> Result<ModelVariant> {
+    match value {
+        "quantized" => Ok(ModelVariant::Quantized),
+        "full" => Ok(ModelVariant::Full),
+        _ => anyhow::bail!("unknown model variant `{value}`"),
+    }
+}
+
+fn parse_search_mode_value(value: &str) -> Result<SearchMode> {
+    match value {
+        "hybrid" => Ok(SearchMode::Hybrid),
+        "vector" => Ok(SearchMode::Vector),
+        "keyword" => Ok(SearchMode::Keyword),
+        _ => anyhow::bail!("unknown search mode `{value}`"),
+    }
+}
+
+fn parse_search_level_value(value: &str) -> Result<SearchLevel> {
+    match value {
+        "chunk" => Ok(SearchLevel::Chunk),
+        "file" => Ok(SearchLevel::File),
+        "both" => Ok(SearchLevel::Both),
+        _ => anyhow::bail!("unknown search level `{value}`"),
     }
 }
 
@@ -1261,6 +1511,15 @@ impl From<ModelVariantArg> for ModelVariant {
         match value {
             ModelVariantArg::Quantized => ModelVariant::Quantized,
             ModelVariantArg::Full => ModelVariant::Full,
+        }
+    }
+}
+
+impl ModelVariant {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ModelVariant::Quantized => "quantized",
+            ModelVariant::Full => "full",
         }
     }
 }

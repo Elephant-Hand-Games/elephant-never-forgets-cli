@@ -7,21 +7,22 @@ Use this checklist for packaging-ready releases.
 - [ ] Verify branch clean and release commit contains only intended changes.
 - [ ] Confirm `README.md`, `docs/command-reference.md`, and packaging docs reflect the
   shipped command behavior.
-- [ ] Bump version and release notes content as required.
+- [ ] Bump `Cargo.toml`, `Cargo.lock`, README install examples, and tests that
+  assert installer versions.
 
 ## Code quality
 
 - [ ] Formatting:
-  - `cargo fmt --all --check`
+  - `cargo fmt --all -- --check`
 - [ ] Lints:
-  - `cargo clippy --all-targets --all-features -- -D warnings`
+  - `cargo clippy --locked --all-targets --all-features -- -D warnings`
 
 ## Test matrix
 
 - [ ] Core test suite:
-  - `cargo test --all`
+  - `cargo test --locked`
 - [ ] Portable Linux profile:
-  - `cargo check --no-default-features`
+  - `cargo check --locked --no-default-features`
 - [ ] Provider mock tests:
   - Add/refresh mock coverage for provider selection and override precedence
     (`native`, `ollama`, `openai`, `openai-compatible`, `http`)
@@ -31,13 +32,14 @@ Use this checklist for packaging-ready releases.
   - Migration can re-run against an existing schema without duplicate state
   - New fields/tables are present after migration
 - [ ] CLI argument coverage:
-  - Ensure docs and tests cover `enf init`, `models`, `index`, `search`,
-    `retrieve`, `status`, `doctor`, and `ci` flag combinations
+  - Ensure docs and tests cover `enf init`, `setup`, `config`, `models`,
+    `index`, `search`, `retrieve`, `status`, and `doctor --ci` flag combinations
 
 ## Packaging
 
 - [ ] Build and package:
-  - `cargo package`
+  - `cargo package --locked --allow-dirty --no-verify`
+  - `cargo build --locked --release`
 - [ ] Build release archives through GitHub Actions tag workflow:
   - `git tag vX.Y.Z && git push origin vX.Y.Z`
   - Confirm assets exist for Apple Silicon macOS, Linux x64, and Windows x64
