@@ -337,9 +337,21 @@ fn maybe_embed_missing_images(
     }
     let provider = providers::ImageEmbeddingProvider::from_config(config)?;
     let mut embedded = 0usize;
+    let mut skipped_image_ids = HashSet::new();
     loop {
-        let images =
-            db::images_missing_embeddings(conn, profile_id, config.image.embedding.batch_size)?;
+        let images = db::images_missing_embeddings(
+            conn,
+            profile_id,
+            config
+                .image
+                .embedding
+                .batch_size
+                .saturating_add(skipped_image_ids.len()),
+        )?
+        .into_iter()
+        .filter(|image| !skipped_image_ids.contains(&image.image_id))
+        .take(config.image.embedding.batch_size)
+        .collect::<Vec<_>>();
         if images.is_empty() {
             break;
         }
@@ -347,10 +359,46 @@ fn maybe_embed_missing_images(
             .iter()
             .map(|image| image.path.clone())
             .collect::<Vec<_>>();
-        let vectors = provider.embed_image_files(root, &paths)?;
-        for (image, vector) in images.iter().zip(vectors.iter()) {
-            db::upsert_image_embedding(conn, profile_id, image.image_id, vector)?;
-            embedded += 1;
+        match provider.embed_image_files(root, &paths) {
+            Ok(vectors) => {
+                for (image, vector) in images.iter().zip(vectors.iter()) {
+                    db::upsert_image_embedding(conn, profile_id, image.image_id, vector)?;
+                    embedded += 1;
+                }
+            }
+            Err(err) if paths.len() > 1 => {
+                eprintln!(
+                    "warning: image embedding batch failed; retrying {} images individually: {err:#}",
+                    paths.len()
+                );
+                for image in &images {
+                    match provider.embed_image_files(root, std::slice::from_ref(&image.path)) {
+                        Ok(vectors) => {
+                            db::upsert_image_embedding(
+                                conn,
+                                profile_id,
+                                image.image_id,
+                                &vectors[0],
+                            )?;
+                            embedded += 1;
+                        }
+                        Err(err) => {
+                            eprintln!(
+                                "warning: skipping image embedding for {}: {err:#}",
+                                image.path
+                            );
+                            skipped_image_ids.insert(image.image_id);
+                        }
+                    }
+                }
+            }
+            Err(err) => {
+                eprintln!(
+                    "warning: skipping image embedding for {}: {err:#}",
+                    paths.join(", ")
+                );
+                skipped_image_ids.extend(images.iter().map(|image| image.image_id));
+            }
         }
     }
     Ok(embedded)

@@ -55,6 +55,26 @@ fn serve_image_embeddings(vectors: Vec<&'static str>) -> (String, thread::JoinHa
     (endpoint, handle)
 }
 
+fn serve_image_embedding_responses(
+    responses: Vec<(&'static str, &'static str)>,
+) -> (String, thread::JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let endpoint = format!("http://{}/embed", listener.local_addr().unwrap());
+    let handle = thread::spawn(move || {
+        for (status, body) in responses {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0u8; 2048];
+            let _ = stream.read(&mut request).unwrap();
+            let response = format!(
+                "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).unwrap();
+        }
+    });
+    (endpoint, handle)
+}
+
 fn chunk_rows(root: &Path, path: &str) -> Vec<(i64, String, i64, i64, String)> {
     let conn = db_connection(root);
     let mut stmt = conn
@@ -466,4 +486,61 @@ fn reembed_refreshes_existing_image_embeddings() {
         embed::deserialize_vector(&bytes).unwrap(),
         vec![0.9, 0.8, 0.7]
     );
+}
+
+#[test]
+fn image_embedding_skips_unsupported_images_after_batch_failure() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    fs::create_dir_all(root.join("assets")).unwrap();
+    fs::write(root.join("assets/first.png"), b"fake png").unwrap();
+    fs::write(root.join("assets/second.png"), b"bad png").unwrap();
+    fs::write(root.join("assets/third.png"), b"fake png").unwrap();
+
+    let (endpoint, server) = serve_image_embedding_responses(vec![
+        (
+            "400 Bad Request",
+            r#"{"detail":"Image input at index 1 is not a valid image"}"#,
+        ),
+        (
+            "200 OK",
+            r#"{"model":"test-image","dimensions":3,"embeddings":[[0.1,0.2,0.3]]}"#,
+        ),
+        (
+            "400 Bad Request",
+            r#"{"detail":"Image input at index 0 is not a valid image"}"#,
+        ),
+        (
+            "200 OK",
+            r#"{"model":"test-image","dimensions":3,"embeddings":[[0.7,0.8,0.9]]}"#,
+        ),
+    ]);
+    let mut config = test_config();
+    config.embedding.provider = Provider::Http;
+    config.embedding.endpoint = Some("http://127.0.0.1:1/embed".into());
+    config.embedding.dimensions = 3;
+    config.image.embedding.enabled = true;
+    config.image.embedding.endpoint = Some(endpoint);
+    config.image.embedding.dimensions = 3;
+    config.image.embedding.batch_size = 3;
+
+    index::index_path(
+        root,
+        PathBuf::from("."),
+        &config,
+        index::EmbedOptions {
+            no_embed: false,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    server.join().unwrap();
+
+    let conn = db_connection(root);
+    let embedded: i64 = conn
+        .query_row("SELECT COUNT(*) FROM image_embeddings", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(embedded, 2);
 }

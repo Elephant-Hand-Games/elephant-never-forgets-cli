@@ -486,11 +486,20 @@ impl ImageEmbeddingProvider {
             .json(&self.request_for_images(images))
             .header(CONTENT_TYPE, "application/json")
             .send()
-            .with_context(|| format!("posting image embedding request to {}", self.endpoint))?
-            .error_for_status()
-            .with_context(|| format!("image embedding request failed for {}", self.endpoint))?
+            .with_context(|| format!("posting image embedding request to {}", self.endpoint))?;
+        let status = response.status();
+        let response = response
             .bytes()
             .context("reading image embedding response body")?;
+        if !status.is_success() {
+            anyhow::bail!(
+                "image embedding request failed for {} with status {} for files [{}]: {}",
+                self.endpoint,
+                status,
+                relative_paths.join(", "),
+                String::from_utf8_lossy(&response)
+            );
+        }
         let parsed = self.parse_embeddings(&response)?;
         if parsed.embeddings.len() != relative_paths.len() {
             anyhow::bail!(

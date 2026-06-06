@@ -16,3 +16,7 @@ When a change is intended to ship, do not stop after merging code to `main`.
 - Push the version-bump commit to `main`, then create and push the matching `vX.Y.Z` tag.
 - Watch the tag-triggered GitHub release workflow until it completes successfully.
 - Verify the release assets were built and published by CI for the supported binaries before calling the update finished.
+- For Daisy installs, use the shipped updater after the release is available:
+  `ssh daisy 'enf update && enf --version'`. Do not copy source, build a
+  temporary binary on Daisy, or manually replace `/home/turnercore/.enf/bin/enf`
+  unless the user explicitly asks for a one-off local build.
