@@ -28,7 +28,7 @@ run the `export PATH=...` command printed by the installer.
 Install a specific release tag:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Elephant-Hand-Games/elephant-never-forgets-cli/main/scripts/install.sh | ENF_VERSION=v1.2.6 sh
+curl -fsSL https://raw.githubusercontent.com/Elephant-Hand-Games/elephant-never-forgets-cli/main/scripts/install.sh | ENF_VERSION=v1.2.7 sh
 ```
 
 Install somewhere else:
@@ -189,10 +189,10 @@ Optional endpoint-backed features are configured in `.enf.toml`:
   reranks filtered search candidates using a response array containing `index`
   and `score`.
 - `[image.embedding] enabled = true` with `endpoint = "http://host:41802/embed"`
-  embeds indexed images by sending raw base64 image strings. These vectors are
-  stored for future compatible image search, but `search --kind image` currently
-  uses path/metadata matching until a text-to-image query embedding endpoint is
-  configured. The current compatible wrapper reports model
+  embeds indexed images by sending raw base64 image strings. Add
+  `query-endpoint = "http://host:41802/v1/images/query_embeddings"` to embed
+  text search queries into the same image vector space for semantic image
+  search. The current compatible wrapper reports model
   `open_clip/ViT-H-14:laion2b_s32b_b79k`, `dimensions = 1024`, and an
   `embeddings` vector list.
 

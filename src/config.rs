@@ -146,6 +146,8 @@ pub struct ImageConfig {
 pub struct ImageEmbeddingConfig {
     pub enabled: bool,
     pub endpoint: Option<String>,
+    #[serde(default)]
+    pub query_endpoint: Option<String>,
     pub model: String,
     pub dimensions: usize,
     pub batch_size: usize,
@@ -204,6 +206,7 @@ impl Default for ImageEmbeddingConfig {
         Self {
             enabled: false,
             endpoint: None,
+            query_endpoint: None,
             model: "open_clip/ViT-H-14:laion2b_s32b_b79k".into(),
             dimensions: 1024,
             batch_size: 16,
@@ -682,6 +685,15 @@ fn validate_image(config: &Config) -> Result<()> {
             .is_none()
     {
         anyhow::bail!("image.embedding.endpoint is required when image.embedding.enabled = true");
+    }
+    if config
+        .image
+        .embedding
+        .query_endpoint
+        .as_deref()
+        .is_some_and(|endpoint| endpoint.trim().is_empty())
+    {
+        anyhow::bail!("image.embedding.query_endpoint must not be empty when set");
     }
     Ok(())
 }

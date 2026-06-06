@@ -31,6 +31,7 @@ pub fn run(args: SearchArgs, retrieve: bool) -> Result<()> {
 
     if args.cached_query_only
         && mode != SearchMode::Keyword
+        && args.kind != SearchKindArg::Image
         && (!config.embedding.query_cache
             || crate::db::query_embedding(&conn, profile_id, &normalized_query)?.is_none())
     {
@@ -100,7 +101,15 @@ pub fn run(args: SearchArgs, retrieve: bool) -> Result<()> {
             )?);
         }
         if mode != SearchMode::Keyword && config.image.embedding.enabled {
-            match image_vector_results(&conn, &config, &args.query, limit, &mode) {
+            match image_vector_results(
+                &conn,
+                &config,
+                &args.query,
+                &normalized_query,
+                args.cached_query_only,
+                limit,
+                &mode,
+            ) {
                 Ok(image_results) => results.extend(image_results),
                 Err(err) if args.kind == SearchKindArg::Image || mode == SearchMode::Vector => {
                     return Err(err);
@@ -601,6 +610,8 @@ fn image_vector_results(
     conn: &rusqlite::Connection,
     config: &crate::config::Config,
     query: &str,
+    normalized_query: &str,
+    cached_query_only: bool,
     limit: usize,
     mode: &SearchMode,
 ) -> Result<Vec<RankedResult>> {
@@ -623,10 +634,76 @@ fn image_vector_results(
     if !has_vectors {
         return Ok(Vec::new());
     }
-    let _ = (query, limit, mode);
-    anyhow::bail!(
-        "image vector search requires a compatible text-to-image query embedding endpoint, which is not configured"
-    )
+    let query_vector = image_query_vector(
+        conn,
+        config,
+        image_profile_id,
+        query,
+        normalized_query,
+        cached_query_only,
+    )?;
+
+    let mut top = ranking::TopK::new(limit.saturating_mul(2).max(limit));
+    crate::db::stream_vector_images_for_profile(
+        conn,
+        image_profile_id,
+        config.search.batch_scan_size,
+        |rows| {
+            for row in rows {
+                let vector_score = ranking::cosine_similarity(&query_vector, &row.vector).max(0.0);
+                let metadata_score = ranking::keyword_score(query, &row.path);
+                let score = weighted_score(mode, config, vector_score, 0.0, metadata_score);
+                top.push(RankedResult {
+                    path: row.path.clone(),
+                    snippet: row.path.clone(),
+                    score,
+                    rerank_score: None,
+                    kind: "image".into(),
+                    file_type: row.file_type.clone(),
+                    file_id: Some(row.file_id),
+                    chunk_id: Some(row.image_id),
+                    chunk_index: None,
+                    start_line: None,
+                    end_line: None,
+                    keyword_score: 0.0,
+                    vector_score,
+                    metadata_score,
+                    profile_hash: crate::db::image_profile_hash_for_config(config),
+                    mode: mode_label(mode).into(),
+                    level: "image".into(),
+                });
+            }
+            Ok(())
+        },
+    )?;
+    Ok(top.into_sorted_vec())
+}
+
+fn image_query_vector(
+    conn: &rusqlite::Connection,
+    config: &crate::config::Config,
+    image_profile_id: i64,
+    query: &str,
+    normalized_query: &str,
+    cached_query_only: bool,
+) -> Result<Vec<f32>> {
+    if config.embedding.query_cache {
+        if let Some(vector) =
+            crate::db::image_query_embedding(conn, image_profile_id, normalized_query)?
+        {
+            return Ok(vector);
+        }
+    }
+    if cached_query_only {
+        return Err(EnfError::QueryEmbeddingNotCached.into());
+    }
+
+    let provider = crate::providers::ImageEmbeddingProvider::from_config(config)?;
+    let vector = provider.embed_query(query)?;
+    if config.embedding.query_cache {
+        crate::db::upsert_image_query_embedding(conn, image_profile_id, normalized_query, &vector)?;
+    }
+    Ok(vector)
 }
 
 fn snippet(text: &str, chars: usize) -> String {

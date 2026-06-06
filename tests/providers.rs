@@ -274,6 +274,7 @@ fn image_embedding_helpers_match_endpoint_shape() {
     let mut config = Config::default();
     config.image.embedding.enabled = true;
     config.image.embedding.endpoint = Some("http://localhost:41802/embed".into());
+    config.image.embedding.query_endpoint = Some("http://localhost:41802/query".into());
     let provider = ImageEmbeddingProvider::from_config(&config).unwrap();
 
     let payload = provider.request_for_images(vec!["abc".into()]);
@@ -281,6 +282,14 @@ fn image_embedding_helpers_match_endpoint_shape() {
         serde_json::to_value(payload).unwrap(),
         json!({
             "images": ["abc"],
+            "normalize": true,
+        })
+    );
+    let payload = provider.request_for_query("terminal error screenshot");
+    assert_eq!(
+        serde_json::to_value(payload).unwrap(),
+        json!({
+            "query": "terminal error screenshot",
             "normalize": true,
         })
     );

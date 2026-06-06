@@ -62,6 +62,12 @@ pub struct ImageEmbeddingsRequest {
     pub normalize: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ImageQueryEmbeddingsRequest {
+    pub query: String,
+    pub normalize: bool,
+}
+
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 pub struct ImageEmbeddingsResponse {
     pub model: String,
@@ -167,6 +173,7 @@ pub struct HttpProvider {
 pub struct ImageEmbeddingProvider {
     client: Client,
     endpoint: String,
+    query_endpoint: Option<String>,
     normalize: bool,
 }
 
@@ -456,6 +463,7 @@ impl ImageEmbeddingProvider {
         Ok(Self {
             client: embedding_client()?,
             endpoint: endpoint.to_string(),
+            query_endpoint: config.image.embedding.query_endpoint.clone(),
             normalize: config.image.embedding.normalize,
         })
     }
@@ -463,6 +471,13 @@ impl ImageEmbeddingProvider {
     pub fn request_for_images(&self, images: Vec<String>) -> ImageEmbeddingsRequest {
         ImageEmbeddingsRequest {
             images,
+            normalize: self.normalize,
+        }
+    }
+
+    pub fn request_for_query(&self, query: &str) -> ImageQueryEmbeddingsRequest {
+        ImageQueryEmbeddingsRequest {
+            query: query.to_string(),
             normalize: self.normalize,
         }
     }
@@ -509,6 +524,42 @@ impl ImageEmbeddingProvider {
             );
         }
         Ok(parsed.embeddings)
+    }
+
+    pub fn embed_query(&self, query: &str) -> Result<Vec<f32>> {
+        let endpoint = self
+            .query_endpoint
+            .as_deref()
+            .filter(|endpoint| !endpoint.trim().is_empty())
+            .context("image.embedding.query-endpoint is required for image vector search")?;
+        validate_endpoint(endpoint, "image query embedding")?;
+        let response = self
+            .client
+            .post(endpoint)
+            .json(&self.request_for_query(query))
+            .header(CONTENT_TYPE, "application/json")
+            .send()
+            .with_context(|| format!("posting image query embedding request to {endpoint}"))?;
+        let status = response.status();
+        let response = response
+            .bytes()
+            .context("reading image query embedding response body")?;
+        if !status.is_success() {
+            anyhow::bail!(
+                "image query embedding request failed for {} with status {}: {}",
+                endpoint,
+                status,
+                String::from_utf8_lossy(&response)
+            );
+        }
+        let parsed = self.parse_embeddings(&response)?;
+        if parsed.embeddings.len() != 1 {
+            anyhow::bail!(
+                "image query embedding response returned {} vectors for one query",
+                parsed.embeddings.len()
+            );
+        }
+        Ok(parsed.embeddings[0].clone())
     }
 }
 

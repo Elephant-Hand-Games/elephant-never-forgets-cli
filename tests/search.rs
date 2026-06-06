@@ -87,6 +87,44 @@ fn seed_agent_vector(root: &std::path::Path, query: &str) {
     db::upsert_chunk_embedding(&conn, profile_id, agent_chunk_id, &[1.0, 0.0, 0.0]).unwrap();
 }
 
+fn seed_image_vector(root: &std::path::Path, query: &str) {
+    let mut config = load_config(root);
+    config.image.embedding.enabled = true;
+    config.image.embedding.endpoint = Some("http://localhost:41802/v1/images/embeddings".into());
+    config.image.embedding.query_endpoint =
+        Some("http://localhost:41802/v1/images/query_embeddings".into());
+    config.image.embedding.dimensions = 3;
+    elephant_never_forgets::config::write_config(&root.join(".enf.toml"), &config).unwrap();
+
+    let conn = Connection::open(root.join(".enf/index.sqlite")).unwrap();
+    let profile_id = db::upsert_image_profile(
+        &conn,
+        &config.image.embedding.model,
+        config.image.embedding.endpoint.as_deref(),
+        config.image.embedding.dimensions,
+        config.image.embedding.normalize,
+    )
+    .unwrap();
+    let image_id: i64 = conn
+        .query_row(
+            "SELECT i.id
+             FROM images i
+             JOIN files f ON f.id = i.file_id
+             WHERE f.path = 'assets/logo.png'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    db::upsert_image_query_embedding(
+        &conn,
+        profile_id,
+        &ranking::query_cache_key(query),
+        &[1.0, 0.0, 0.0],
+    )
+    .unwrap();
+    db::upsert_image_embedding(&conn, profile_id, image_id, &[1.0, 0.0, 0.0]).unwrap();
+}
+
 #[test]
 fn search_returns_ranked_plain_text_results() {
     let temp = setup_indexed_project();
@@ -348,6 +386,37 @@ fn search_kind_image_returns_labeled_image_results() {
     assert_eq!(json["results"][0]["kind"], "image");
     assert_eq!(json["results"][0]["path"], "assets/logo.png");
     assert_eq!(json["results"][0]["file_type"], "png");
+}
+
+#[test]
+fn search_kind_image_vector_uses_cached_query_embedding() {
+    let temp = setup_indexed_project_with_image();
+    seed_image_vector(temp.path(), "logo");
+
+    let output = enf()
+        .current_dir(temp.path())
+        .args([
+            "search",
+            "logo",
+            "--kind",
+            "image",
+            "--mode",
+            "vector",
+            "--cached-query-only",
+            "--json",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: Value = serde_json::from_slice(&output).unwrap();
+
+    assert_eq!(json["results"][0]["kind"], "image");
+    assert_eq!(json["results"][0]["path"], "assets/logo.png");
+    assert_eq!(json["results"][0]["mode"], "vector");
+    assert_eq!(json["results"][0]["level"], "image");
+    assert_eq!(json["results"][0]["vector_score"], 1.0);
 }
 
 #[test]
