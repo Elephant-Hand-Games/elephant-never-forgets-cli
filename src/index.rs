@@ -11,8 +11,9 @@ use rusqlite::{params, OptionalExtension, Transaction};
 use serde::Serialize;
 
 use crate::{
+    chunker,
     cli::{IndexArgs, RemoveArgs},
-    config::{Config, Provider},
+    config::{ChunkingMode, Config, Provider},
     db,
     discovery::{self, DiscoveredFileKind},
     extract, models, providers,
@@ -550,6 +551,17 @@ fn sync_text_file(
     } else {
         None
     };
+    let store_chunks = config.index.store_chunks;
+    let desired_chunks = if store_chunks {
+        Some(chunk_records(
+            &file.relative_path,
+            extracted.text.as_bytes(),
+            &extracted.text,
+            config,
+        ))
+    } else {
+        None
+    };
 
     if let Some(existing) = load_file(tx, &file.relative_path)? {
         if existing.hash == file_hash
@@ -558,9 +570,15 @@ fn sync_text_file(
             && existing.modified_at == modified_at
             && existing.content == content
         {
-            if !config.index.store_chunks && file_has_chunks(tx, existing.id)? {
+            if !store_chunks && file_has_chunks(tx, existing.id)? {
                 delete_chunks(tx, existing.id, &file.relative_path)?;
                 return Ok(1);
+            }
+            if let Some(desired_chunks) = desired_chunks.as_ref() {
+                if !file_chunks_match(tx, existing.id, desired_chunks)? {
+                    replace_chunks(tx, existing.id, &file.relative_path, desired_chunks)?;
+                    return Ok(1);
+                }
             }
             return Ok(0);
         }
@@ -576,13 +594,13 @@ fn sync_text_file(
                 content,
             },
         )?;
-        replace_chunks(
-            tx,
-            existing.id,
-            &file.relative_path,
-            &extracted.text,
-            config,
-        )?;
+        if store_chunks {
+            if let Some(desired_chunks) = desired_chunks.as_ref() {
+                replace_chunks(tx, existing.id, &file.relative_path, desired_chunks)?;
+            }
+        } else {
+            delete_chunks(tx, existing.id, &file.relative_path)?;
+        }
         return Ok(1);
     }
 
@@ -599,7 +617,11 @@ fn sync_text_file(
         ],
     )?;
     let file_id = tx.last_insert_rowid();
-    insert_chunks(tx, file_id, &file.relative_path, &extracted.text, config)?;
+    if store_chunks {
+        if let Some(desired_chunks) = desired_chunks.as_ref() {
+            insert_chunks(tx, file_id, &file.relative_path, desired_chunks)?;
+        }
+    }
     Ok(1)
 }
 
@@ -671,6 +693,39 @@ fn file_has_chunks(tx: &Transaction<'_>, file_id: i64) -> Result<bool> {
     )?)
 }
 
+fn file_chunks_match(tx: &Transaction<'_>, file_id: i64, chunks: &[ChunkRecord]) -> Result<bool> {
+    let mut stmt = tx.prepare(
+        "SELECT hash, text, start_line, end_line, token_count
+         FROM chunks
+         WHERE file_id = ?1
+         ORDER BY chunk_index",
+    )?;
+    let rows = stmt.query_map([file_id], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, i64>(2)?,
+            row.get::<_, i64>(3)?,
+            row.get::<_, i64>(4)?,
+        ))
+    })?;
+    let existing = rows.collect::<Result<Vec<_>, _>>()?;
+    if existing.len() != chunks.len() {
+        return Ok(false);
+    }
+    for (existing, chunk) in existing.iter().zip(chunks.iter()) {
+        if existing.0 != chunk.hash
+            || existing.1 != chunk.text
+            || existing.2 != chunk.start_line as i64
+            || existing.3 != chunk.end_line as i64
+            || existing.4 != chunk.token_count as i64
+        {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
 fn load_file(tx: &Transaction<'_>, path: &str) -> Result<Option<FileRecord>> {
     Ok(tx
         .query_row(
@@ -712,11 +767,10 @@ fn replace_chunks(
     tx: &Transaction<'_>,
     file_id: i64,
     path: &str,
-    text: &str,
-    config: &Config,
+    chunks: &[ChunkRecord],
 ) -> Result<()> {
     delete_chunks(tx, file_id, path)?;
-    insert_chunks(tx, file_id, path, text, config)
+    insert_chunks(tx, file_id, path, chunks)
 }
 
 fn delete_chunks(tx: &Transaction<'_>, file_id: i64, path: &str) -> Result<()> {
@@ -743,14 +797,9 @@ fn insert_chunks(
     tx: &Transaction<'_>,
     file_id: i64,
     path: &str,
-    text: &str,
-    config: &Config,
+    chunks: &[ChunkRecord],
 ) -> Result<()> {
-    if !config.index.store_chunks {
-        return Ok(());
-    }
-
-    for (chunk_index, chunk) in chunk_text(text, config).into_iter().enumerate() {
+    for (chunk_index, chunk) in chunks.iter().enumerate() {
         tx.execute(
             "INSERT INTO chunks(file_id, chunk_index, hash, text, start_line, end_line, token_count)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
@@ -771,6 +820,31 @@ fn insert_chunks(
         )?;
     }
     Ok(())
+}
+
+fn chunk_records(path: &str, bytes: &[u8], text: &str, config: &Config) -> Vec<ChunkRecord> {
+    match config.index.chunking {
+        ChunkingMode::Off => {
+            vec![ChunkRecord {
+                hash: blake3::hash(text.as_bytes()).to_hex().to_string(),
+                text: text.to_string(),
+                start_line: 1,
+                end_line: text.lines().count().max(1),
+                token_count: count_tokens(text),
+            }]
+        }
+        ChunkingMode::LineWindow => chunk_text(text, config),
+        ChunkingMode::Smart => chunker::process_file_for_rag(path, bytes)
+            .into_iter()
+            .map(|chunk| ChunkRecord {
+                hash: blake3::hash(chunk.text.as_bytes()).to_hex().to_string(),
+                token_count: count_tokens(&chunk.text),
+                text: chunk.text,
+                start_line: chunk.start_line,
+                end_line: chunk.end_line,
+            })
+            .collect(),
+    }
 }
 
 fn remove_missing_files(

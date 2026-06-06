@@ -2,7 +2,9 @@ use std::fs;
 
 use assert_cmd::Command;
 
-use elephant_never_forgets::config::{self, Config, ModelCache, ModelVariant, Provider};
+use elephant_never_forgets::config::{
+    self, ChunkingMode, Config, EmbeddingFallbackConfig, ModelCache, ModelVariant, Provider,
+};
 
 fn read_config(path: &std::path::Path) -> Config {
     let text = fs::read_to_string(path).unwrap();
@@ -33,6 +35,41 @@ fn init_writes_default_spec_config() {
 }
 
 #[test]
+fn default_config_tracks_code_files_and_uses_smart_chunking() {
+    let config = Config::default();
+
+    assert_eq!(config.index.chunking, ChunkingMode::Smart);
+    for pattern in [
+        "**/*.rs",
+        "**/*.js",
+        "**/*.ts",
+        "**/*.jsx",
+        "**/*.tsx",
+        "**/*.py",
+        "**/*.go",
+        "**/*.zig",
+        "**/*.gd",
+        "**/*.html",
+        "**/*.css",
+        "**/*.json",
+        "**/*.toml",
+        "**/*.tmol",
+        "**/*.yml",
+        "**/*.yaml",
+    ] {
+        assert!(
+            config
+                .text
+                .include
+                .patterns
+                .iter()
+                .any(|value| value == pattern),
+            "missing default include pattern {pattern}"
+        );
+    }
+}
+
+#[test]
 fn init_applies_provider_and_model_overrides_coherently() {
     let temp = tempfile::tempdir().unwrap();
 
@@ -44,7 +81,7 @@ fn init_applies_provider_and_model_overrides_coherently() {
     let ollama = read_config(&temp.path().join(".enf.toml"));
     assert_eq!(ollama.embedding.provider, Provider::Ollama);
     assert_eq!(ollama.embedding.engine, None);
-    assert_eq!(ollama.embedding.model, "nomic-embed-text");
+    assert_eq!(ollama.embedding.model, "nomic-embed-text-v1.5");
     assert_eq!(
         ollama.embedding.endpoint.as_deref(),
         Some("http://localhost:11434/api/embed")
@@ -101,6 +138,115 @@ fn init_supports_native_aliases_model_and_cache_overrides() {
         assert_eq!(config.embedding.api_key_env, None);
         assert_eq!(config.embedding.dimensions, 768);
     }
+}
+
+#[test]
+fn init_normalizes_nomic_and_gemma_aliases_with_model_specific_guidance() {
+    let temp = tempfile::tempdir().unwrap();
+
+    run_init(
+        temp.path(),
+        &[
+            "--provider",
+            "native",
+            "--model",
+            "gemma",
+            "--chunking",
+            "smart",
+        ],
+    );
+
+    let gemma = read_config(&temp.path().join(".enf.toml"));
+    assert_eq!(gemma.embedding.provider, Provider::Native);
+    assert_eq!(gemma.embedding.engine.as_deref(), Some("candle"));
+    assert_eq!(gemma.embedding.model, "google/embeddinggemma-300m");
+    assert_eq!(gemma.embedding.dimensions, 768);
+    assert_eq!(gemma.embedding.document_prefix, "title: none | text: ");
+    assert_eq!(
+        gemma.embedding.query_prefix,
+        "task: search result | query: "
+    );
+    assert_eq!(gemma.index.chunking, ChunkingMode::Smart);
+
+    run_init(
+        temp.path(),
+        &[
+            "--force",
+            "--provider",
+            "openai-compatible",
+            "--model",
+            "nomic",
+            "--endpoint",
+            "https://embed.example.test/v1/embeddings",
+            "--chunking",
+            "off",
+        ],
+    );
+
+    let nomic = read_config(&temp.path().join(".enf.toml"));
+    assert_eq!(nomic.embedding.provider, Provider::OpenaiCompatible);
+    assert_eq!(nomic.embedding.model, "nomic-embed-text-v1.5");
+    assert_eq!(nomic.embedding.document_prefix, "search_document: ");
+    assert_eq!(nomic.embedding.query_prefix, "search_query: ");
+    assert_eq!(nomic.index.chunking, ChunkingMode::Off);
+}
+
+#[test]
+fn init_records_same_model_fallback_endpoint_or_native_fallback() {
+    let temp = tempfile::tempdir().unwrap();
+
+    run_init(
+        temp.path(),
+        &[
+            "--provider",
+            "openai-compatible",
+            "--model",
+            "google/embeddinggemma-300m",
+            "--endpoint",
+            "https://primary.example.test/v1/embeddings",
+            "--fallback-provider",
+            "native",
+        ],
+    );
+
+    let config = read_config(&temp.path().join(".enf.toml"));
+    assert_eq!(
+        config.embedding.fallback,
+        Some(EmbeddingFallbackConfig {
+            provider: Provider::Native,
+            endpoint: None,
+            api_key_env: None,
+        })
+    );
+
+    run_init(
+        temp.path(),
+        &[
+            "--force",
+            "--provider",
+            "openai-compatible",
+            "--model",
+            "gemma",
+            "--endpoint",
+            "https://primary.example.test/v1/embeddings",
+            "--fallback-provider",
+            "openai-compatible",
+            "--fallback-endpoint",
+            "https://fallback.example.test/v1/embeddings",
+            "--fallback-api-key-env",
+            "FALLBACK_EMBED_KEY",
+        ],
+    );
+
+    let config = read_config(&temp.path().join(".enf.toml"));
+    assert_eq!(
+        config.embedding.fallback,
+        Some(EmbeddingFallbackConfig {
+            provider: Provider::OpenaiCompatible,
+            endpoint: Some("https://fallback.example.test/v1/embeddings".into()),
+            api_key_env: Some("FALLBACK_EMBED_KEY".into()),
+        })
+    );
 }
 
 #[test]

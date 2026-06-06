@@ -32,6 +32,10 @@ pub enum Command {
 }
 
 #[derive(Debug, Args)]
+/// Configure a new project database and embedding profile.
+///
+/// Gemma is recommended for code-oriented documents, while Nomic is often a better
+/// default for larger documents and no-chunking prose workflows.
 pub struct InitArgs {
     #[arg(long, default_value = "sqlite", default_missing_value = "sqlite", num_args = 0..=1)]
     pub db: DbArg,
@@ -44,6 +48,8 @@ pub struct InitArgs {
     #[arg(long)]
     pub model: Option<String>,
     #[arg(long, value_enum)]
+    pub chunking: Option<ChunkingModeArg>,
+    #[arg(long, value_enum)]
     pub variant: Option<ModelVariantArg>,
     #[arg(long)]
     pub endpoint: Option<String>,
@@ -52,7 +58,15 @@ pub struct InitArgs {
     #[arg(long)]
     pub dimensions: Option<usize>,
     #[arg(long, value_enum)]
+    pub fallback_provider: Option<ProviderArg>,
+    #[arg(long)]
+    pub fallback_endpoint: Option<String>,
+    #[arg(long)]
+    pub fallback_api_key_env: Option<String>,
+    #[arg(long, value_enum)]
     pub model_cache: Option<ModelCacheArg>,
+    #[arg(long, help = "Ask for profile settings interactively")]
+    pub interactive: bool,
     #[arg(long)]
     pub install_models: bool,
     #[arg(long)]
@@ -253,6 +267,13 @@ pub enum SearchKindArg {
     All,
     Text,
     Image,
+}
+
+#[derive(Clone, Debug, ValueEnum, PartialEq, Eq)]
+pub enum ChunkingModeArg {
+    Smart,
+    LineWindow,
+    Off,
 }
 
 pub fn run() -> anyhow::Result<()> {

@@ -1,7 +1,7 @@
 use std::{env, path::Path, time::Duration};
 
 #[cfg(feature = "native-candle")]
-use crate::native_candle::NomicV15CandleEmbedding;
+use crate::native_candle::NativeCandleEmbedding;
 use anyhow::{Context, Result};
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use reqwest::{
@@ -12,26 +12,160 @@ use reqwest::{
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    config::{Config, Provider},
+    config::{Config, EmbeddingFallbackConfig, Provider},
     embed::{
-        profile_hash, EmbeddingProfile, EmbeddingProvider, CHUNKER_VERSION,
-        EMBEDDING_SERIALIZATION_VERSION, NORMALIZER_VERSION,
+        profile_hash, profile_hash_with_fallback, EmbeddingProfile, EmbeddingProvider,
+        CHUNKER_VERSION, EMBEDDING_SERIALIZATION_VERSION, NORMALIZER_VERSION,
     },
 };
 
 pub fn build_provider(config: &Config) -> Result<Box<dyn EmbeddingProvider + Send>> {
-    match config.embedding.provider {
-        Provider::Native => Ok(Box::new(NativeCandleProvider::from_config(config)?)),
-        Provider::Ollama => Ok(Box::new(OllamaProvider::from_config(config)?)),
-        Provider::Openai => Ok(Box::new(OpenAiProvider::from_config(config)?)),
-        Provider::OpenaiCompatible => Ok(Box::new(OpenAiCompatibleProvider::from_config(config)?)),
-        Provider::Http => Ok(Box::new(HttpProvider::from_config(config)?)),
+    let primary = match config.embedding.provider {
+        Provider::Native => Box::new(NativeCandleProvider::from_config(config)?)
+            as Box<dyn EmbeddingProvider + Send>,
+        Provider::Ollama => {
+            Box::new(OllamaProvider::from_config(config)?) as Box<dyn EmbeddingProvider + Send>
+        }
+        Provider::Openai => {
+            Box::new(OpenAiProvider::from_config(config)?) as Box<dyn EmbeddingProvider + Send>
+        }
+        Provider::OpenaiCompatible => Box::new(OpenAiCompatibleProvider::from_config(config)?)
+            as Box<dyn EmbeddingProvider + Send>,
+        Provider::Http => {
+            Box::new(HttpProvider::from_config(config)?) as Box<dyn EmbeddingProvider + Send>
+        }
+    };
+
+    let Some(fallback) = config.embedding.fallback.as_ref() else {
+        return Ok(primary);
+    };
+    let fallback_provider = build_fallback_provider(config, fallback)?;
+    Ok(Box::new(FallbackEmbeddingProvider::new(
+        primary,
+        fallback_provider,
+        config.embedding.fallback.as_ref(),
+    )))
+}
+
+fn build_fallback_provider(
+    config: &Config,
+    fallback: &EmbeddingFallbackConfig,
+) -> Result<Box<dyn EmbeddingProvider + Send>> {
+    let mut fallback_config = config.clone();
+    fallback_config.embedding.provider = fallback.provider.clone();
+    fallback_config.embedding.endpoint = fallback.endpoint.clone();
+    fallback_config.embedding.api_key_env = fallback.api_key_env.clone();
+    crate::config::normalize_provider_defaults(&mut fallback_config);
+    let provider = match fallback_config.embedding.provider {
+        Provider::Native => Box::new(NativeCandleProvider::from_config(&fallback_config)?)
+            as Box<dyn EmbeddingProvider + Send>,
+        Provider::Ollama => Box::new(OllamaProvider::from_config(&fallback_config)?)
+            as Box<dyn EmbeddingProvider + Send>,
+        Provider::Openai => Box::new(OpenAiProvider::from_config(&fallback_config)?)
+            as Box<dyn EmbeddingProvider + Send>,
+        Provider::OpenaiCompatible => {
+            Box::new(OpenAiCompatibleProvider::from_config(&fallback_config)?)
+                as Box<dyn EmbeddingProvider + Send>
+        }
+        Provider::Http => Box::new(HttpProvider::from_config(&fallback_config)?)
+            as Box<dyn EmbeddingProvider + Send>,
+    };
+    Ok(provider)
+}
+
+struct FallbackEmbeddingProvider {
+    primary: Box<dyn EmbeddingProvider + Send>,
+    fallback: Box<dyn EmbeddingProvider + Send>,
+    fallback_config: Option<EmbeddingFallbackConfig>,
+}
+
+impl FallbackEmbeddingProvider {
+    fn new(
+        primary: Box<dyn EmbeddingProvider + Send>,
+        fallback_provider: Box<dyn EmbeddingProvider + Send>,
+        fallback: Option<&EmbeddingFallbackConfig>,
+    ) -> Self {
+        Self {
+            primary,
+            fallback: fallback_provider,
+            fallback_config: fallback.cloned(),
+        }
+    }
+
+    fn embed_documents_with_fallback(&mut self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
+        self.fallback.embed_documents(texts)
+    }
+
+    fn embed_query_with_fallback(&mut self, query: &str) -> Result<Vec<Vec<f32>>> {
+        self.fallback.embed_query(query).map(|vector| vec![vector])
+    }
+
+    fn validate_dimensions(&self, vectors: &[Vec<f32>], expected: usize, mode: &str) -> Result<()> {
+        for (idx, vector) in vectors.iter().enumerate() {
+            if vector.len() != expected {
+                anyhow::bail!(
+                    "{mode} embedding returned vector {idx} with {} dimensions but expected {}",
+                    vector.len(),
+                    expected
+                );
+            }
+        }
+        Ok(())
+    }
+}
+
+impl EmbeddingProvider for FallbackEmbeddingProvider {
+    fn profile(&self) -> EmbeddingProfile {
+        let mut profile = self.primary.profile();
+        profile.profile_hash = profile_hash_with_fallback(&profile, self.fallback_config.as_ref());
+        profile
+    }
+
+    fn ensure_ready(&mut self) -> Result<()> {
+        match self.primary.ensure_ready() {
+            Ok(()) => Ok(()),
+            Err(primary_err) => {
+                if self.fallback.ensure_ready().is_ok() {
+                    Ok(())
+                } else {
+                    Err(primary_err)
+                }
+            }
+        }
+    }
+
+    fn embed_documents(&mut self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
+        if texts.is_empty() {
+            return Ok(Vec::new());
+        }
+        let expected_dimensions = self.profile().dimensions;
+
+        let vectors = match self.primary.embed_documents(texts) {
+            Ok(vectors) => vectors,
+            Err(_) => self.embed_documents_with_fallback(texts)?,
+        };
+        self.validate_dimensions(&vectors, expected_dimensions, "document")?;
+        Ok(vectors)
+    }
+
+    fn embed_query(&mut self, query: &str) -> Result<Vec<f32>> {
+        let expected_dimensions = self.profile().dimensions;
+
+        let vectors = match self.primary.embed_query(query) {
+            Ok(vector) => vec![vector],
+            Err(_) => self.embed_query_with_fallback(query)?,
+        };
+        self.validate_dimensions(&vectors, expected_dimensions, "query")?;
+        vectors
+            .into_iter()
+            .next()
+            .context("fallback embedding provider returned no query embedding")
     }
 }
 
 #[cfg(feature = "native-candle")]
 pub struct NativeCandleProvider {
-    model: Option<NomicV15CandleEmbedding>,
+    model: Option<NativeCandleEmbedding>,
     model_name: String,
     variant: Option<String>,
     dimensions: usize,
@@ -203,17 +337,22 @@ impl NativeCandleProvider {
 
     #[cfg(feature = "native-candle")]
     fn from_native_config(config: &Config) -> Result<Self> {
-        if config.embedding.model != "nomic-embed-text-v1.5" {
+        if !matches!(
+            config.embedding.model.as_str(),
+            "nomic-embed-text-v1.5" | "google/embeddinggemma-300m"
+        ) {
             anyhow::bail!(
                 "unsupported native Candle model profile: model={}. \
-                 This build ships nomic-embed-text-v1.5 for native embeddings.",
+                 This build ships nomic-embed-text-v1.5 and google/embeddinggemma-300m for native embeddings.",
                 config.embedding.model
             );
         }
-        if !matches!(
-            config.embedding.variant,
-            Some(crate::config::ModelVariant::Quantized)
-        ) {
+        if config.embedding.model == "nomic-embed-text-v1.5"
+            && !matches!(
+                config.embedding.variant,
+                Some(crate::config::ModelVariant::Quantized)
+            )
+        {
             anyhow::bail!(
                 "embedding.variant must be \"quantized\" for native Candle model {}",
                 config.embedding.model
@@ -238,9 +377,9 @@ impl NativeCandleProvider {
     }
 
     #[cfg(feature = "native-candle")]
-    fn model(&mut self) -> Result<&mut NomicV15CandleEmbedding> {
+    fn model(&mut self) -> Result<&mut NativeCandleEmbedding> {
         if self.model.is_none() {
-            self.model = Some(NomicV15CandleEmbedding::from_hf()?);
+            self.model = Some(NativeCandleEmbedding::from_hf(&self.model_name)?);
         }
         Ok(self.model.as_mut().expect("model was initialized"))
     }

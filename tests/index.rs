@@ -4,7 +4,7 @@ use std::{
 };
 
 use elephant_never_forgets::{
-    config::{Config, Provider},
+    config::{ChunkingMode, Config, Provider},
     db, discovery, embed, index,
 };
 use rusqlite::Connection;
@@ -120,6 +120,33 @@ fn discovery_honors_include_and_exclude_patterns() {
 }
 
 #[test]
+fn discovery_tracks_code_extensions_by_default() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    write_file(root, "src/lib.rs", "pub fn search() {}");
+    write_file(
+        root,
+        "web/app.tsx",
+        "export function App() { return null; }",
+    );
+    write_file(root, "game/player.gd", "func _ready(): pass");
+    write_file(root, "config/app.yaml", "service: enf");
+
+    let files = discovery::discover(root, root, &Config::default()).unwrap();
+    let paths: Vec<_> = files.into_iter().map(|file| file.relative_path).collect();
+
+    assert_eq!(
+        paths,
+        vec![
+            "config/app.yaml",
+            "game/player.gd",
+            "src/lib.rs",
+            "web/app.tsx"
+        ]
+    );
+}
+
+#[test]
 fn discovery_honors_enfignore_and_enfignoredir() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path();
@@ -206,6 +233,73 @@ fn index_keeps_chunk_stability_for_unchanged_files() {
     let after = chunk_rows(root, "docs/story.txt");
 
     assert_eq!(before, after);
+}
+
+#[test]
+fn index_chunking_off_stores_one_full_file_chunk() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    let mut config = test_config();
+    config.index.chunking = ChunkingMode::Off;
+
+    write_file(
+        root,
+        "docs/story.txt",
+        "one two\nthree four\nfive six\nseven eight\nnine ten",
+    );
+
+    index::index_path(
+        root,
+        PathBuf::from("."),
+        &config,
+        index::EmbedOptions {
+            install_models: false,
+            no_embed: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    let rows = chunk_rows(root, "docs/story.txt");
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].2, 1);
+    assert_eq!(rows[0].3, 5);
+    assert_eq!(
+        rows[0].4,
+        "one two\nthree four\nfive six\nseven eight\nnine ten"
+    );
+}
+
+#[test]
+fn index_smart_chunking_adds_metadata_headers_for_code() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    let mut config = test_config();
+    config.index.chunking = ChunkingMode::Smart;
+
+    write_file(
+        root,
+        "src/lib.rs",
+        "pub struct Searcher;\n\nimpl Searcher {\n    pub fn search(&self) {}\n}\n",
+    );
+
+    index::index_path(
+        root,
+        PathBuf::from("."),
+        &config,
+        index::EmbedOptions {
+            install_models: false,
+            no_embed: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    let rows = chunk_rows(root, "src/lib.rs");
+    assert!(!rows.is_empty());
+    assert!(rows.iter().any(|row| row.4.contains("File: src/lib.rs")));
+    assert!(rows.iter().any(|row| row.4.contains("Language: rust")));
+    assert!(rows.iter().any(|row| row.4.contains("Symbol: Searcher")));
 }
 
 #[test]

@@ -2,10 +2,10 @@ use anyhow::Result;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
-use crate::config::{Config, ModelVariant, Provider};
+use crate::config::{Config, EmbeddingFallbackConfig, ModelVariant, Provider};
 
 pub const NORMALIZER_VERSION: &str = "normalizer-v1";
-pub const CHUNKER_VERSION: &str = "chunker-v1";
+pub const CHUNKER_VERSION: &str = "chunker-v2";
 pub const EMBEDDING_SERIALIZATION_VERSION: &str = "f32-le-v1";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -61,11 +61,18 @@ pub fn active_profile(config: &Config) -> EmbeddingProfile {
         chunker_version: CHUNKER_VERSION.into(),
         serialization_version: EMBEDDING_SERIALIZATION_VERSION.into(),
     };
-    profile.profile_hash = profile_hash(&profile);
+    profile.profile_hash = profile_hash_with_fallback(&profile, config.embedding.fallback.as_ref());
     profile
 }
 
 pub fn profile_hash(profile: &EmbeddingProfile) -> String {
+    profile_hash_with_fallback(profile, None)
+}
+
+pub fn profile_hash_with_fallback(
+    profile: &EmbeddingProfile,
+    fallback: Option<&EmbeddingFallbackConfig>,
+) -> String {
     let mut hasher = blake3::Hasher::new();
     update_hash_field(&mut hasher, "provider", &profile.provider);
     update_optional_hash_field(&mut hasher, "engine", profile.engine.as_deref());
@@ -86,6 +93,20 @@ pub fn profile_hash(profile: &EmbeddingProfile) -> String {
         "serialization_version",
         &profile.serialization_version,
     );
+    if let Some(fallback) = fallback {
+        let fallback_provider = fallback.provider.as_str();
+        update_hash_field(&mut hasher, "fallback.provider", fallback_provider);
+        update_optional_hash_field(
+            &mut hasher,
+            "fallback.endpoint",
+            fallback.endpoint.as_deref(),
+        );
+        update_optional_hash_field(
+            &mut hasher,
+            "fallback.api_key_env",
+            fallback.api_key_env.as_deref(),
+        );
+    }
     hasher.finalize().to_hex().to_string()
 }
 

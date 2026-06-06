@@ -1,3 +1,4 @@
+use std::io::{self, IsTerminal, Write};
 use std::{fs, path::PathBuf};
 
 use anyhow::{Context, Result};
@@ -5,8 +6,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     cli::{
-        DbArg, InitArgs, ModelCacheArg, ModelVariantArg, ProviderArg, ProviderOverrideArgs,
-        SearchLevelArg, SearchModeArg,
+        ChunkingModeArg, DbArg, InitArgs, ModelCacheArg, ModelVariantArg, ProviderArg,
+        ProviderOverrideArgs, SearchLevelArg, SearchModeArg,
     },
     db,
     errors::EnfError,
@@ -60,10 +61,20 @@ pub struct EmbeddingConfig {
     pub endpoint: Option<String>,
     pub api_key_env: Option<String>,
     pub dimensions: usize,
+    #[serde(default)]
+    pub fallback: Option<EmbeddingFallbackConfig>,
     pub batch_size: usize,
     pub query_cache: bool,
     pub document_prefix: String,
     pub query_prefix: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "kebab-case")]
+pub struct EmbeddingFallbackConfig {
+    pub provider: Provider,
+    pub endpoint: Option<String>,
+    pub api_key_env: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -114,6 +125,8 @@ pub enum SearchLevel {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct IndexConfig {
+    #[serde(default = "ChunkingMode::default")]
+    pub chunking: ChunkingMode,
     pub chunk_target_tokens: usize,
     pub chunk_max_tokens: usize,
     pub chunk_overlap_tokens: usize,
@@ -121,6 +134,15 @@ pub struct IndexConfig {
     pub hash_algorithm: String,
     pub store_full_files: bool,
     pub store_chunks: bool,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "kebab-case")]
+pub enum ChunkingMode {
+    #[default]
+    Smart,
+    LineWindow,
+    Off,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -248,6 +270,7 @@ impl Default for Config {
                 endpoint: None,
                 api_key_env: None,
                 dimensions: 768,
+                fallback: None,
                 batch_size: 64,
                 query_cache: true,
                 document_prefix: "search_document: ".into(),
@@ -265,6 +288,7 @@ impl Default for Config {
                 snippet_chars: 700,
             },
             index: IndexConfig {
+                chunking: ChunkingMode::Smart,
                 chunk_target_tokens: 450,
                 chunk_max_tokens: 900,
                 chunk_overlap_tokens: 80,
@@ -289,6 +313,22 @@ fn default_text_include_patterns() -> Vec<String> {
         "CHANGELOG*",
         "CONTRIBUTING*",
         "docs/**",
+        "**/*.rs",
+        "**/*.js",
+        "**/*.ts",
+        "**/*.jsx",
+        "**/*.tsx",
+        "**/*.py",
+        "**/*.go",
+        "**/*.zig",
+        "**/*.gd",
+        "**/*.html",
+        "**/*.css",
+        "**/*.json",
+        "**/*.toml",
+        "**/*.tmol",
+        "**/*.yml",
+        "**/*.yaml",
         "**/*.md",
         "**/*.mdx",
         "**/*.txt",
@@ -323,6 +363,8 @@ fn default_exclude_patterns() -> Vec<String> {
     vec![
         ".git/**",
         ".enf/**",
+        ".enf.toml",
+        ".enf.local.toml",
         "node_modules/**",
         "dist/**",
         "build/**",
@@ -664,6 +706,10 @@ fn validate_embedding(config: &Config) -> Result<()> {
         Provider::OpenaiCompatible | Provider::Http => {}
     }
 
+    if let Some(fallback) = &config.embedding.fallback {
+        validate_fallback_embedding(config, fallback)?;
+    }
+
     Ok(())
 }
 
@@ -719,6 +765,34 @@ fn validate_reranker(config: &Config) -> Result<()> {
     Ok(())
 }
 
+fn validate_fallback_embedding(config: &Config, fallback: &EmbeddingFallbackConfig) -> Result<()> {
+    let mut fallback_config = config.clone();
+    fallback_config.embedding.fallback = None;
+    fallback_config.embedding.provider = fallback.provider.clone();
+    fallback_config.embedding.endpoint = fallback.endpoint.clone();
+    fallback_config.embedding.api_key_env = fallback.api_key_env.clone();
+    fallback_config.embedding.model = normalize_model_aliases(&config.embedding.model);
+    normalize_provider_defaults(&mut fallback_config);
+
+    if fallback_config.embedding.provider == Provider::Native {
+        if fallback_config.embedding.endpoint.is_some() {
+            anyhow::bail!(
+                "embedding.fallback.endpoint must be omitted when embedding.fallback.provider = \"native\""
+            );
+        }
+        if fallback_config.embedding.api_key_env.is_some() {
+            anyhow::bail!(
+                "embedding.fallback.api-key-env must be omitted when embedding.fallback.provider = \"native\""
+            );
+        }
+    }
+
+    validate_embedding(&fallback_config).map_err(|err| {
+        err.context("embedding.fallback is invalid. Configure [embedding.fallback] consistently")
+    })?;
+    Ok(())
+}
+
 fn validate_non_empty_path(field: &str, value: &str, hint: &str) -> Result<()> {
     if value.trim().is_empty() {
         anyhow::bail!("{} must not be empty; {}", field, hint);
@@ -734,18 +808,47 @@ fn validate_non_negative_weight(field: &str, value: f32) -> Result<()> {
 }
 
 fn apply_init_overrides(config: &mut Config, args: &InitArgs) {
-    if let Some(provider) = &args.provider {
-        config.embedding.provider = provider.clone().into();
-    }
-    if args.native_embed || args.local_embed {
-        config.embedding.provider = Provider::Native;
-        config.embedding.engine = Some("candle".into());
-    }
-    if let Some(model) = &args.model {
-        config.embedding.model = model.clone();
+    let interactive = if args.interactive {
+        interactive_init_defaults(config)
+    } else {
+        Ok(InteractiveInitDefaults::default())
+    };
+
+    let interactive = match interactive {
+        Ok(values) => values,
+        Err(err) => {
+            if args.interactive {
+                log_interactive_warning(&err);
+                InteractiveInitDefaults::default()
+            } else {
+                InteractiveInitDefaults::default()
+            }
+        }
+    };
+
+    let provider = args
+        .provider
+        .clone()
+        .or(interactive.provider)
+        .or_else(|| (args.native_embed || args.local_embed).then_some(ProviderArg::Native))
+        .unwrap_or(match config.embedding.provider {
+            Provider::Native => ProviderArg::Native,
+            Provider::Ollama => ProviderArg::Ollama,
+            Provider::Openai => ProviderArg::Openai,
+            Provider::OpenaiCompatible => ProviderArg::OpenaiCompatible,
+            Provider::Http => ProviderArg::Http,
+        });
+    config.embedding.provider = provider.into();
+
+    if let Some(model) = args.model.clone().or(interactive.model) {
+        config.embedding.model = model;
     }
     if let Some(variant) = &args.variant {
         config.embedding.variant = Some(variant.clone().into());
+    }
+    config.embedding.model = normalize_model_aliases(&config.embedding.model);
+    if let Some(chunking) = args.chunking.clone().or(interactive.chunking) {
+        config.index.chunking = chunking.into();
     }
     if let Some(model_cache) = &args.model_cache {
         config.state.model_cache = model_cache.clone().into();
@@ -759,64 +862,110 @@ fn apply_init_overrides(config: &mut Config, args: &InitArgs) {
     }
     if let Some(dimensions) = args.dimensions {
         config.embedding.dimensions = dimensions;
-    } else if config.embedding.provider == Provider::Openai {
-        config.embedding.dimensions = openai_dimensions(&config.embedding.model);
+    }
+    normalize_provider_defaults(config);
+    if args.dimensions.is_none() {
+        config.embedding.dimensions = default_model_dimensions(config);
+    }
+    if let Some(fallback_provider) = args
+        .fallback_provider
+        .clone()
+        .or(interactive.fallback_provider)
+    {
+        config.embedding.fallback = Some(EmbeddingFallbackConfig {
+            provider: fallback_provider.into(),
+            endpoint: args
+                .fallback_endpoint
+                .clone()
+                .or(interactive.fallback_endpoint),
+            api_key_env: args
+                .fallback_api_key_env
+                .clone()
+                .or(interactive.fallback_api_key_env),
+        });
+    } else {
+        config.embedding.fallback = None;
+    }
+    if let Some(fallback) = &mut config.embedding.fallback {
+        if fallback.provider == Provider::Native {
+            fallback.endpoint = None;
+            fallback.api_key_env = None;
+        }
+    }
+    if config.embedding.fallback.is_some() {
+        config.embedding.fallback = Some(normalize_fallback_config(
+            config
+                .embedding
+                .fallback
+                .clone()
+                .unwrap_or(EmbeddingFallbackConfig {
+                    provider: config.embedding.provider.clone(),
+                    endpoint: None,
+                    api_key_env: None,
+                }),
+            config,
+        ));
     }
 }
 
 pub fn normalize_provider_defaults(config: &mut Config) {
+    config.embedding.model = normalize_model_aliases(&config.embedding.model);
     match config.embedding.provider {
         Provider::Native => {
             config.embedding.engine = Some("candle".into());
             config.embedding.endpoint = None;
             config.embedding.api_key_env = None;
-            config.embedding.dimensions = 768;
-            if config.embedding.model == "nomic-embed-text-v2-moe" {
-                config.embedding.model = "nomic-embed-text-v1.5".into();
-            }
             if config.embedding.variant.is_none() {
                 config.embedding.variant = Some(ModelVariant::Quantized);
             }
-            config.embedding.document_prefix = "search_document: ".into();
-            config.embedding.query_prefix = "search_query: ".into();
         }
         Provider::Ollama => {
             config.embedding.engine = None;
             config.embedding.endpoint = Some("http://localhost:11434/api/embed".into());
-            config.embedding.dimensions = 768;
             config.embedding.variant = None;
-            config.embedding.document_prefix = "search_document: ".into();
-            config.embedding.query_prefix = "search_query: ".into();
-            if config.embedding.model == "nomic-embed-text-v1.5" {
-                config.embedding.model = "nomic-embed-text".into();
-            }
         }
         Provider::Openai => {
             config.embedding.engine = None;
             config.embedding.endpoint = Some("https://api.openai.com/v1/embeddings".into());
             config.embedding.api_key_env = Some("OPENAI_API_KEY".into());
             config.embedding.variant = None;
-            config.embedding.document_prefix.clear();
-            config.embedding.query_prefix.clear();
-            if config.embedding.model == "nomic-embed-text-v1.5" {
+            if is_nomic_model(&config.embedding.model) {
                 config.embedding.model = "text-embedding-3-small".into();
             }
-            config.embedding.dimensions = openai_dimensions(&config.embedding.model);
+            config.embedding.document_prefix.clear();
+            config.embedding.query_prefix.clear();
         }
         Provider::OpenaiCompatible | Provider::Http => {
             config.embedding.engine = None;
             config.embedding.variant = None;
         }
     }
+    if config.embedding.provider != Provider::Openai {
+        config.embedding.document_prefix = default_document_prefix(&config.embedding.model);
+        config.embedding.query_prefix = default_query_prefix(&config.embedding.model);
+    }
+    config.embedding.dimensions = default_model_dimensions(config);
 }
 
 pub fn apply_provider_overrides(config: &mut Config, overrides: &ProviderOverrideArgs) {
+    let has_overrides = overrides.provider.is_some()
+        || overrides.model.is_some()
+        || overrides.variant.is_some()
+        || overrides.endpoint.is_some()
+        || overrides.api_key_env.is_some()
+        || overrides.dimensions.is_some();
+    if !has_overrides {
+        return;
+    }
+
     if let Some(provider) = &overrides.provider {
         config.embedding.provider = provider.clone().into();
         normalize_provider_defaults(config);
     }
     if let Some(model) = &overrides.model {
         config.embedding.model = model.clone();
+        config.embedding.model = normalize_model_aliases(&config.embedding.model);
+        normalize_provider_defaults(config);
     }
     if let Some(variant) = &overrides.variant {
         config.embedding.variant = Some(variant.clone().into());
@@ -829,9 +978,202 @@ pub fn apply_provider_overrides(config: &mut Config, overrides: &ProviderOverrid
     }
     if let Some(dimensions) = overrides.dimensions {
         config.embedding.dimensions = dimensions;
-    } else if config.embedding.provider == Provider::Openai {
-        config.embedding.dimensions = openai_dimensions(&config.embedding.model);
+    } else {
+        config.embedding.dimensions = default_model_dimensions(config);
     }
+}
+
+fn normalize_model_aliases(model: &str) -> String {
+    match model {
+        "nomic" | "nomic-embed-text" | "nomic-embed-text-v1.5" | "nomic-embed-text-v2-moe" => {
+            "nomic-embed-text-v1.5".into()
+        }
+        "gemma" | "embeddinggemma-300m" | "google" | "google/embeddinggemma-300m" => {
+            "google/embeddinggemma-300m".into()
+        }
+        _ => model.to_string(),
+    }
+}
+
+fn default_model_dimensions(config: &Config) -> usize {
+    if is_gemma_model(&config.embedding.model) || is_nomic_model(&config.embedding.model) {
+        768
+    } else if config.embedding.provider == Provider::Openai {
+        openai_dimensions(&config.embedding.model)
+    } else {
+        config.embedding.dimensions
+    }
+}
+
+fn is_gemma_model(model: &str) -> bool {
+    matches!(
+        model,
+        "google/embeddinggemma-300m" | "embeddinggemma-300m" | "gemma"
+    )
+}
+
+fn is_nomic_model(model: &str) -> bool {
+    matches!(
+        model,
+        "nomic-embed-text" | "nomic-embed-text-v1.5" | "nomic-embed-text-v2-moe" | "nomic"
+    )
+}
+
+fn default_document_prefix(model: &str) -> String {
+    if is_gemma_model(model) {
+        "title: none | text: ".into()
+    } else {
+        "search_document: ".into()
+    }
+}
+
+fn default_query_prefix(model: &str) -> String {
+    if is_gemma_model(model) {
+        "task: search result | query: ".into()
+    } else {
+        "search_query: ".into()
+    }
+}
+
+fn interactive_init_defaults(config: &Config) -> Result<InteractiveInitDefaults> {
+    run_interactive_init_prompt(config)
+}
+
+#[derive(Default)]
+struct InteractiveInitDefaults {
+    pub provider: Option<ProviderArg>,
+    pub model: Option<String>,
+    pub chunking: Option<ChunkingModeArg>,
+    pub fallback_provider: Option<ProviderArg>,
+    pub fallback_endpoint: Option<String>,
+    pub fallback_api_key_env: Option<String>,
+}
+
+fn run_interactive_init_prompt(config: &Config) -> Result<InteractiveInitDefaults> {
+    if !io::stdin().is_terminal() {
+        anyhow::bail!("--interactive requires a TTY");
+    }
+    let mut answers = InteractiveInitDefaults::default();
+
+    let provider = prompt_line(
+        "Embedding provider (native/ollama/openai/openai-compatible/http)",
+        None,
+    )?;
+    if !provider.trim().is_empty() {
+        answers.provider = Some(
+            parse_provider_arg(&provider)
+                .with_context(|| format!("invalid provider: {provider}"))?,
+        );
+    }
+
+    let model = prompt_line(
+        &format!("Model [{}]", config.embedding.model.as_str()),
+        Some(config.embedding.model.as_str()),
+    )?;
+    if !model.trim().is_empty() {
+        answers.model = Some(model);
+    }
+
+    let chunking = prompt_line("Chunking mode [smart/line-window/off]", Some("smart"))?;
+    if !chunking.trim().is_empty() {
+        answers.chunking = Some(parse_chunking_arg(&chunking).context("invalid chunking mode")?);
+    }
+
+    let fallback_provider = prompt_line(
+        "Fallback provider [native/openai-compatible/http/ollama/openai] (empty to skip)",
+        None,
+    )?;
+    if !fallback_provider.trim().is_empty() {
+        answers.fallback_provider = Some(parse_provider_arg(&fallback_provider)?);
+    }
+
+    let fallback_endpoint = prompt_line("Fallback endpoint (empty to use provider default)", None)?;
+    if !fallback_endpoint.trim().is_empty() {
+        answers.fallback_endpoint = Some(fallback_endpoint);
+    }
+
+    let fallback_api_key_env = prompt_line("Fallback API key env (optional)", None)?;
+    if !fallback_api_key_env.trim().is_empty() {
+        answers.fallback_api_key_env = Some(fallback_api_key_env);
+    }
+
+    Ok(answers)
+}
+
+fn prompt_line(prompt: &str, default: Option<&str>) -> Result<String> {
+    print!("{prompt}");
+    if let Some(default) = default {
+        print!(" [{}]", default);
+    }
+    print!(": ");
+    io::stdout().flush()?;
+    let mut value = String::new();
+    io::stdin()
+        .read_line(&mut value)
+        .with_context(|| format!("reading input for interactive init prompt {prompt:?}"))?;
+    let value = value.trim().to_string();
+    if value.is_empty() {
+        return Ok(default.unwrap_or("").to_string());
+    }
+    Ok(value)
+}
+
+fn parse_provider_arg(value: &str) -> Result<ProviderArg> {
+    match value.to_lowercase().as_str() {
+        "native" => Ok(ProviderArg::Native),
+        "ollama" => Ok(ProviderArg::Ollama),
+        "openai" => Ok(ProviderArg::Openai),
+        "openai-compatible" => Ok(ProviderArg::OpenaiCompatible),
+        "http" => Ok(ProviderArg::Http),
+        _ => anyhow::bail!("expected one of native, ollama, openai, openai-compatible, http"),
+    }
+}
+
+fn parse_chunking_arg(value: &str) -> Result<ChunkingModeArg> {
+    match value.to_lowercase().as_str() {
+        "smart" => Ok(ChunkingModeArg::Smart),
+        "line-window" | "line_window" | "line" => Ok(ChunkingModeArg::LineWindow),
+        "off" => Ok(ChunkingModeArg::Off),
+        _ => anyhow::bail!("expected smart, line-window, or off"),
+    }
+}
+
+fn normalize_fallback_config(
+    fallback: EmbeddingFallbackConfig,
+    config: &Config,
+) -> EmbeddingFallbackConfig {
+    let mut normalized = config.clone();
+    normalized.embedding.fallback = None;
+    normalized.embedding.provider = fallback.provider.clone();
+    normalized.embedding.endpoint = fallback.endpoint.clone();
+    normalized.embedding.api_key_env = fallback.api_key_env.clone();
+    normalize_provider_defaults(&mut normalized);
+
+    let mut fallback = EmbeddingFallbackConfig {
+        provider: normalized.embedding.provider,
+        endpoint: normalized.embedding.endpoint,
+        api_key_env: normalized.embedding.api_key_env,
+    };
+    if fallback.provider == Provider::Native {
+        fallback.endpoint = None;
+        fallback.api_key_env = None;
+    }
+
+    fallback
+}
+
+impl From<ChunkingModeArg> for ChunkingMode {
+    fn from(value: ChunkingModeArg) -> Self {
+        match value {
+            ChunkingModeArg::Smart => Self::Smart,
+            ChunkingModeArg::LineWindow => Self::LineWindow,
+            ChunkingModeArg::Off => Self::Off,
+        }
+    }
+}
+
+fn log_interactive_warning(err: &anyhow::Error) {
+    eprintln!("warning: interactive input unavailable: {err:#}");
 }
 
 fn openai_dimensions(model: &str) -> usize {

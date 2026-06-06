@@ -15,6 +15,21 @@ fn help_exposes_core_commands() {
 }
 
 #[test]
+fn init_help_guides_model_and_chunking_choices() {
+    Command::cargo_bin("enf")
+        .unwrap()
+        .args(["init", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Gemma"))
+        .stdout(predicate::str::contains("code"))
+        .stdout(predicate::str::contains("Nomic"))
+        .stdout(predicate::str::contains("larger documents"))
+        .stdout(predicate::str::contains("--chunking"))
+        .stdout(predicate::str::contains("--interactive"));
+}
+
+#[test]
 fn init_creates_config_and_database() {
     let temp = tempfile::tempdir().unwrap();
     let mut cmd = Command::cargo_bin("enf").unwrap();
@@ -134,7 +149,7 @@ fn update_dry_run_prints_installer_command_and_env() {
         .args([
             "update",
             "--version",
-            "v1.2.7",
+            "v1.3.0",
             "--install-dir",
             "/tmp/enf/bin",
             "--method",
@@ -145,7 +160,7 @@ fn update_dry_run_prints_installer_command_and_env() {
         .success()
         .stdout(predicate::str::contains("curl -fsSL"))
         .stdout(predicate::str::contains("scripts/install.sh"))
-        .stdout(predicate::str::contains("ENF_VERSION=v1.2.7"))
+        .stdout(predicate::str::contains("ENF_VERSION=v1.3.0"))
         .stdout(predicate::str::contains("ENF_INSTALL_DIR=/tmp/enf/bin"))
         .stdout(predicate::str::contains("ENF_INSTALL_METHOD=binary"));
 }

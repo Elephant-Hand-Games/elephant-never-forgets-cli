@@ -1,5 +1,5 @@
 use elephant_never_forgets::{
-    config::{self, Config, Provider},
+    config::{self, Config, EmbeddingFallbackConfig, Provider},
     embed,
     providers::{
         build_provider, parse_image_embeddings, parse_ollama_embeddings, parse_openai_embeddings,
@@ -105,6 +105,57 @@ fn serve_reranker_fallback() -> (String, thread::JoinHandle<Vec<String>>) {
     (endpoint, handle)
 }
 
+fn serve_openai_embeddings_once(body: &'static str) -> (String, thread::JoinHandle<String>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let endpoint = format!("http://{}/v1/embeddings", listener.local_addr().unwrap());
+    let handle = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut request = Vec::new();
+        let mut buffer = [0u8; 1024];
+        loop {
+            let read = stream.read(&mut buffer).unwrap();
+            if read == 0 {
+                break;
+            }
+            request.extend_from_slice(&buffer[..read]);
+            if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                break;
+            }
+        }
+        let headers = String::from_utf8_lossy(&request);
+        let content_length = headers
+            .lines()
+            .find_map(|line| line.strip_prefix("content-length: "))
+            .or_else(|| {
+                headers
+                    .lines()
+                    .find_map(|line| line.strip_prefix("Content-Length: "))
+            })
+            .and_then(|value| value.trim().parse::<usize>().ok())
+            .unwrap_or(0);
+        let body_start = request
+            .windows(4)
+            .position(|window| window == b"\r\n\r\n")
+            .map(|position| position + 4)
+            .unwrap_or(request.len());
+        while request.len().saturating_sub(body_start) < content_length {
+            let read = stream.read(&mut buffer).unwrap();
+            if read == 0 {
+                break;
+            }
+            request.extend_from_slice(&buffer[..read]);
+        }
+        let request_body = String::from_utf8_lossy(&request[body_start..]).to_string();
+        let response = format!(
+            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).unwrap();
+        request_body
+    });
+    (endpoint, handle)
+}
+
 #[test]
 fn build_provider_dispatches_to_the_expected_profiles() {
     let ollama = build_provider(&base_config(Provider::Ollama)).unwrap();
@@ -168,6 +219,83 @@ fn endpoint_changes_embedding_profile_identity() {
         embed::active_profile(&first).profile_hash,
         embed::active_profile(&second).profile_hash
     );
+}
+
+#[test]
+fn fallback_changes_embedding_profile_identity() {
+    let mut first = base_config(Provider::OpenaiCompatible);
+    first.embedding.model = "google/embeddinggemma-300m".into();
+    first.embedding.fallback = None;
+
+    let mut second = first.clone();
+    second.embedding.fallback = Some(EmbeddingFallbackConfig {
+        provider: Provider::Native,
+        endpoint: None,
+        api_key_env: None,
+    });
+
+    assert_ne!(
+        embed::active_profile(&first).profile_hash,
+        embed::active_profile(&second).profile_hash
+    );
+}
+
+#[test]
+fn primary_endpoint_failure_falls_back_to_same_model_endpoint() {
+    let fallback_body = r#"{"data":[{"index":0,"embedding":[0.1,0.2,0.3]}]}"#;
+    let (fallback_endpoint, server) = serve_openai_embeddings_once(fallback_body);
+
+    let mut config = base_config(Provider::OpenaiCompatible);
+    config.embedding.model = "google/embeddinggemma-300m".into();
+    config.embedding.dimensions = 3;
+    config.embedding.endpoint = Some("http://127.0.0.1:9/v1/embeddings".into());
+    config.embedding.fallback = Some(EmbeddingFallbackConfig {
+        provider: Provider::OpenaiCompatible,
+        endpoint: Some(fallback_endpoint),
+        api_key_env: None,
+    });
+    config::validate(&config).unwrap();
+
+    let mut provider = build_provider(&config).unwrap();
+    let vectors = provider
+        .embed_documents(&["fn main() {}".to_string()])
+        .unwrap();
+    let request_body = server.join().unwrap();
+
+    assert_eq!(vectors, vec![vec![0.1, 0.2, 0.3]]);
+    assert!(request_body.contains("google/embeddinggemma-300m"));
+    assert!(request_body.contains("title: none | text: fn main() {}"));
+}
+
+#[test]
+fn successful_bad_dimension_response_does_not_fall_back() {
+    let primary_body = r#"{"data":[{"index":0,"embedding":[0.1,0.2]}]}"#;
+    let fallback_body = r#"{"data":[{"index":0,"embedding":[0.1,0.2,0.3]}]}"#;
+    let (primary_endpoint, primary_server) = serve_openai_embeddings_once(primary_body);
+    let (fallback_endpoint, fallback_server) = serve_openai_embeddings_once(fallback_body);
+
+    let mut config = base_config(Provider::OpenaiCompatible);
+    config.embedding.model = "google/embeddinggemma-300m".into();
+    config.embedding.dimensions = 3;
+    config.embedding.endpoint = Some(primary_endpoint);
+    config.embedding.fallback = Some(EmbeddingFallbackConfig {
+        provider: Provider::OpenaiCompatible,
+        endpoint: Some(fallback_endpoint),
+        api_key_env: None,
+    });
+    config::validate(&config).unwrap();
+
+    let mut provider = build_provider(&config).unwrap();
+    std::env::set_var("CUSTOM_EMBED_API_KEY", "test");
+    let result = provider.embed_documents(&["fn main() {}".to_string()]);
+    let _primary_body = primary_server.join().unwrap();
+
+    let err = result.unwrap_err().to_string();
+    assert!(
+        !fallback_server.is_finished(),
+        "fallback endpoint should not be called"
+    );
+    assert!(err.contains("dimensions"));
 }
 
 #[test]
