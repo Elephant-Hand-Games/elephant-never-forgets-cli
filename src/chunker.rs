@@ -132,6 +132,11 @@ pub fn process_line_window(
 }
 
 pub fn process_file_for_rag(file_path: &str, bytes: &[u8]) -> Vec<Chunk> {
+    let normalized_name = file_path
+        .rsplit('/')
+        .next()
+        .unwrap_or(file_path)
+        .to_ascii_lowercase();
     let ext = file_path
         .rsplit('.')
         .next()
@@ -142,6 +147,12 @@ pub fn process_file_for_rag(file_path: &str, bytes: &[u8]) -> Vec<Chunk> {
     }
 
     let source = String::from_utf8_lossy(bytes);
+    if normalized_name == "dockerfile" || normalized_name.starts_with("dockerfile.") {
+        return process_dockerfile(file_path, &source);
+    }
+    if normalized_name == "makefile" || normalized_name.ends_with(".mk") {
+        return process_makefile(file_path, &source);
+    }
     match ext.as_str() {
         "md" | "markdown" => process_markdown(file_path, &source),
         "txt" => process_txt(file_path, &source),
@@ -156,6 +167,18 @@ pub fn process_file_for_rag(file_path: &str, bytes: &[u8]) -> Vec<Chunk> {
         "py" => process_python(file_path, &source),
         "go" => process_go(file_path, &source),
         "zig" => process_zig(file_path, &source),
+        "cs" => process_csharp(file_path, &source),
+        "c" | "cc" | "cpp" | "cxx" | "h" | "hh" | "hpp" | "hxx" => {
+            process_cpp_family(file_path, &source)
+        }
+        "java" => process_java(file_path, &source),
+        "kt" | "kts" => process_kotlin(file_path, &source),
+        "swift" => process_swift(file_path, &source),
+        "sql" => process_sql(file_path, &source),
+        "xml" | "svg" => process_xml_like(file_path, &source),
+        "lua" => process_lua(file_path, &source),
+        "glsl" | "vert" | "frag" | "comp" | "hlsl" | "wgsl" => process_shader(file_path, &source),
+        "sh" | "bash" | "zsh" => process_shell(file_path, &source),
         _ => {
             if looks_like_source_code(&source) {
                 process_general_code(file_path, infer_code_language(file_path), &source)
@@ -867,6 +890,422 @@ pub fn process_zig(file_path: &str, source: &str) -> Vec<Chunk> {
                 text,
             ));
         }
+    }
+    chunks
+}
+
+pub fn process_csharp(file_path: &str, source: &str) -> Vec<Chunk> {
+    let opts = ChunkOptions {
+        target_min_tokens: 150,
+        target_max_tokens: 600,
+        hard_max_tokens: 1_200,
+        overlap_tokens: 0,
+    };
+    let lines: Vec<&str> = source.lines().collect();
+    let mut chunks = Vec::new();
+    let mut starts = Vec::new();
+    let mut pending_attr_start: Option<usize> = None;
+    let mut depth = 0isize;
+    for (i, line) in lines.iter().enumerate() {
+        let t = line.trim();
+        if depth <= 1 && (t.starts_with('[') || t.starts_with("///")) {
+            pending_attr_start.get_or_insert(i);
+        }
+        if depth <= 1 && is_csharp_boundary(t) {
+            starts.push(pending_attr_start.take().unwrap_or(i));
+        }
+        depth += brace_delta_ignoring_simple_strings(line);
+        if depth < 0 {
+            depth = 0;
+        }
+    }
+    starts.sort_unstable();
+    starts.dedup();
+    if starts.is_empty() {
+        return split_plain_blocks(file_path, "csharp", "csharp_file", vec![], source, &opts);
+    }
+    starts.push(lines.len());
+    for pair in starts.windows(2) {
+        let start = pair[0];
+        let end = pair[1];
+        let text = line_range_text(&lines, start, end);
+        let title = infer_csharp_title(&text);
+        if estimate_tokens(&text) > opts.hard_max_tokens {
+            chunks.extend(split_large_code_unit(
+                file_path,
+                "csharp",
+                title,
+                &text,
+                start + 1,
+                &opts,
+            ));
+        } else {
+            chunks.push(make_chunk(
+                file_path,
+                "csharp",
+                "code_symbol",
+                title,
+                vec![],
+                start + 1,
+                end,
+                text,
+            ));
+        }
+    }
+    chunks
+}
+
+pub fn process_cpp_family(file_path: &str, source: &str) -> Vec<Chunk> {
+    let ext = file_path.rsplit('.').next().unwrap_or("");
+    let language = match ext {
+        "c" => "c",
+        "h" => "c_or_cpp_header",
+        _ => "cpp",
+    };
+    let opts = ChunkOptions {
+        target_min_tokens: 150,
+        target_max_tokens: 600,
+        hard_max_tokens: 1_200,
+        overlap_tokens: 0,
+    };
+    let lines: Vec<&str> = source.lines().collect();
+    let mut chunks = Vec::new();
+    let mut starts = Vec::new();
+    let mut pending_prefix_start: Option<usize> = None;
+    let mut depth = 0isize;
+    for (i, line) in lines.iter().enumerate() {
+        let t = line.trim();
+        if depth == 0
+            && (t.starts_with("//")
+                || t.starts_with("/*")
+                || t.starts_with('*')
+                || t.starts_with("template")
+                || t.starts_with("#if")
+                || t.starts_with("#ifdef")
+                || t.starts_with("#ifndef")
+                || t.starts_with("#define"))
+        {
+            pending_prefix_start.get_or_insert(i);
+        }
+        if depth == 0 && is_cpp_boundary(t) {
+            starts.push(pending_prefix_start.take().unwrap_or(i));
+        }
+        depth += brace_delta_ignoring_simple_strings(line);
+        if depth < 0 {
+            depth = 0;
+        }
+    }
+    starts.sort_unstable();
+    starts.dedup();
+    if starts.is_empty() {
+        return split_plain_blocks(file_path, language, "cpp_file", vec![], source, &opts);
+    }
+    starts.push(lines.len());
+    for pair in starts.windows(2) {
+        let start = pair[0];
+        let end = pair[1];
+        let text = line_range_text(&lines, start, end);
+        let title = infer_cpp_title(&text);
+        if estimate_tokens(&text) > opts.hard_max_tokens {
+            chunks.extend(split_large_code_unit(
+                file_path,
+                language,
+                title,
+                &text,
+                start + 1,
+                &opts,
+            ));
+        } else {
+            chunks.push(make_chunk(
+                file_path,
+                language,
+                "code_symbol",
+                title,
+                vec![],
+                start + 1,
+                end,
+                text,
+            ));
+        }
+    }
+    chunks
+}
+
+pub fn process_java(file_path: &str, source: &str) -> Vec<Chunk> {
+    process_brace_language(
+        file_path,
+        "java",
+        "java_file",
+        source,
+        is_java_boundary,
+        infer_java_title,
+        &["/**", "*", "@"],
+    )
+}
+
+pub fn process_kotlin(file_path: &str, source: &str) -> Vec<Chunk> {
+    process_prefix_language(
+        file_path,
+        "kotlin",
+        "kotlin_file",
+        source,
+        is_kotlin_boundary,
+        infer_kotlin_title,
+        &["/**", "*", "@"],
+    )
+}
+
+pub fn process_swift(file_path: &str, source: &str) -> Vec<Chunk> {
+    process_prefix_language(
+        file_path,
+        "swift",
+        "swift_file",
+        source,
+        is_swift_boundary,
+        infer_swift_title,
+        &["///", "@"],
+    )
+}
+
+pub fn process_sql(file_path: &str, source: &str) -> Vec<Chunk> {
+    let opts = ChunkOptions {
+        target_min_tokens: 100,
+        target_max_tokens: 700,
+        hard_max_tokens: 1_200,
+        overlap_tokens: 0,
+    };
+    let mut chunks = Vec::new();
+    let mut statement = String::new();
+    let mut start_line = 1usize;
+    for (i, line) in source.lines().enumerate() {
+        if statement.trim().is_empty() {
+            start_line = i + 1;
+        }
+        statement.push_str(line);
+        statement.push('\n');
+        if line.trim_end().ends_with(';') {
+            push_sql_statement(file_path, &mut chunks, &opts, &statement, start_line, i + 1);
+            statement.clear();
+        }
+    }
+    if !statement.trim().is_empty() {
+        push_sql_statement(
+            file_path,
+            &mut chunks,
+            &opts,
+            &statement,
+            start_line,
+            source.lines().count(),
+        );
+    }
+    chunks
+}
+
+pub fn process_xml_like(file_path: &str, source: &str) -> Vec<Chunk> {
+    let language = if file_path.ends_with(".svg") {
+        "svg"
+    } else {
+        "xml"
+    };
+    let opts = ChunkOptions {
+        target_min_tokens: 150,
+        target_max_tokens: 700,
+        hard_max_tokens: 1_200,
+        overlap_tokens: 0,
+    };
+    let lines: Vec<&str> = source.lines().collect();
+    let mut chunks = Vec::new();
+    let mut starts = Vec::new();
+    for (i, line) in lines.iter().enumerate() {
+        let t = line.trim_start();
+        if t.starts_with("<svg")
+            || t.starts_with("<g")
+            || t.starts_with("<defs")
+            || t.starts_with("<symbol")
+            || t.starts_with("<path")
+            || t.starts_with("<section")
+            || t.starts_with("<component")
+            || t.starts_with("<resource")
+        {
+            starts.push(i);
+        }
+    }
+    if starts.is_empty() {
+        return split_plain_blocks(file_path, language, "xml_document", vec![], source, &opts);
+    }
+    starts.push(lines.len());
+    for pair in starts.windows(2) {
+        let start = pair[0];
+        let end = pair[1];
+        let text = line_range_text(&lines, start, end);
+        let title = infer_xml_title(&text);
+        chunks.push(make_chunk(
+            file_path,
+            language,
+            "xml_subtree",
+            title.clone(),
+            title.map(|t| vec![t]).unwrap_or_default(),
+            start + 1,
+            end,
+            text,
+        ));
+    }
+    chunks
+}
+
+pub fn process_lua(file_path: &str, source: &str) -> Vec<Chunk> {
+    process_prefix_language(
+        file_path,
+        "lua",
+        "lua_file",
+        source,
+        is_lua_boundary,
+        infer_lua_title,
+        &["--"],
+    )
+}
+
+pub fn process_shader(file_path: &str, source: &str) -> Vec<Chunk> {
+    let language = if file_path.ends_with(".wgsl") {
+        "wgsl"
+    } else if file_path.ends_with(".hlsl") {
+        "hlsl"
+    } else {
+        "glsl"
+    };
+    process_prefix_language(
+        file_path,
+        language,
+        "shader_file",
+        source,
+        is_shader_boundary,
+        infer_shader_title,
+        &["@", "layout", "uniform ", "#", "//"],
+    )
+}
+
+pub fn process_dockerfile(file_path: &str, source: &str) -> Vec<Chunk> {
+    let opts = ChunkOptions {
+        target_min_tokens: 100,
+        target_max_tokens: 600,
+        hard_max_tokens: 1_000,
+        overlap_tokens: 0,
+    };
+    let lines: Vec<&str> = source.lines().collect();
+    let mut starts = Vec::new();
+    for (i, line) in lines.iter().enumerate() {
+        if line.trim_start().to_ascii_uppercase().starts_with("FROM ") {
+            starts.push(i);
+        }
+    }
+    if starts.is_empty() {
+        return split_plain_blocks(file_path, "dockerfile", "dockerfile", vec![], source, &opts);
+    }
+    starts.push(lines.len());
+    let mut chunks = Vec::new();
+    for pair in starts.windows(2) {
+        let start = pair[0];
+        let end = pair[1];
+        let text = line_range_text(&lines, start, end);
+        let title = infer_docker_stage_title(&text);
+        chunks.push(make_chunk(
+            file_path,
+            "dockerfile",
+            "docker_stage",
+            title.clone(),
+            title.map(|t| vec![t]).unwrap_or_default(),
+            start + 1,
+            end,
+            text,
+        ));
+    }
+    chunks
+}
+
+pub fn process_shell(file_path: &str, source: &str) -> Vec<Chunk> {
+    let opts = ChunkOptions {
+        target_min_tokens: 100,
+        target_max_tokens: 600,
+        hard_max_tokens: 1_000,
+        overlap_tokens: 0,
+    };
+    let lines: Vec<&str> = source.lines().collect();
+    let mut starts = Vec::new();
+    for (i, line) in lines.iter().enumerate() {
+        let t = line.trim();
+        if is_shell_function(t) || is_shell_heading_comment(t) {
+            starts.push(i);
+        }
+    }
+    starts.sort_unstable();
+    starts.dedup();
+    if starts.is_empty() {
+        return split_plain_blocks(file_path, "shell", "shell_script", vec![], source, &opts);
+    }
+    starts.push(lines.len());
+    let mut chunks = Vec::new();
+    for pair in starts.windows(2) {
+        let start = pair[0];
+        let end = pair[1];
+        let text = line_range_text(&lines, start, end);
+        chunks.push(make_chunk(
+            file_path,
+            "shell",
+            "shell_block",
+            infer_shell_title(&text),
+            vec![],
+            start + 1,
+            end,
+            text,
+        ));
+    }
+    chunks
+}
+
+pub fn process_makefile(file_path: &str, source: &str) -> Vec<Chunk> {
+    let opts = ChunkOptions {
+        target_min_tokens: 100,
+        target_max_tokens: 600,
+        hard_max_tokens: 1_000,
+        overlap_tokens: 0,
+    };
+    let lines: Vec<&str> = source.lines().collect();
+    let mut starts = Vec::new();
+    let mut pending_comment_start: Option<usize> = None;
+    for (i, line) in lines.iter().enumerate() {
+        let t = line.trim();
+        if t.starts_with('#') {
+            pending_comment_start.get_or_insert(i);
+        }
+        if is_make_target(line) {
+            starts.push(pending_comment_start.take().unwrap_or(i));
+        }
+        if !t.starts_with('#') && !t.is_empty() {
+            pending_comment_start = None;
+        }
+    }
+    starts.sort_unstable();
+    starts.dedup();
+    if starts.is_empty() {
+        return split_plain_blocks(file_path, "makefile", "makefile", vec![], source, &opts);
+    }
+    starts.push(lines.len());
+    let mut chunks = Vec::new();
+    for pair in starts.windows(2) {
+        let start = pair[0];
+        let end = pair[1];
+        let text = line_range_text(&lines, start, end);
+        let title = infer_make_title(&text);
+        chunks.push(make_chunk(
+            file_path,
+            "makefile",
+            "make_target",
+            title.clone(),
+            title.map(|t| vec![t]).unwrap_or_default(),
+            start + 1,
+            end,
+            text,
+        ));
     }
     chunks
 }
@@ -2361,6 +2800,580 @@ fn count_tokens(line: &str) -> usize {
     line.split_whitespace().count()
 }
 
+fn process_brace_language(
+    file_path: &str,
+    language: &str,
+    fallback_type: &str,
+    source: &str,
+    boundary: fn(&str) -> bool,
+    infer_title: fn(&str) -> Option<String>,
+    prefix_markers: &[&str],
+) -> Vec<Chunk> {
+    let opts = ChunkOptions {
+        target_min_tokens: 150,
+        target_max_tokens: 600,
+        hard_max_tokens: 1_200,
+        overlap_tokens: 0,
+    };
+    let lines: Vec<&str> = source.lines().collect();
+    let mut starts = Vec::new();
+    let mut pending_prefix_start: Option<usize> = None;
+    let mut depth = 0isize;
+    for (i, line) in lines.iter().enumerate() {
+        let t = line.trim();
+        if depth <= 1 && prefix_markers.iter().any(|marker| t.starts_with(marker)) {
+            pending_prefix_start.get_or_insert(i);
+        }
+        if depth <= 1 && boundary(t) {
+            starts.push(pending_prefix_start.take().unwrap_or(i));
+        }
+        depth += brace_delta_ignoring_simple_strings(line);
+        if depth < 0 {
+            depth = 0;
+        }
+    }
+    emit_prefix_chunks(
+        file_path,
+        language,
+        fallback_type,
+        "code_symbol",
+        source,
+        starts,
+        infer_title,
+        &opts,
+    )
+}
+
+fn process_prefix_language(
+    file_path: &str,
+    language: &str,
+    fallback_type: &str,
+    source: &str,
+    boundary: fn(&str) -> bool,
+    infer_title: fn(&str) -> Option<String>,
+    prefix_markers: &[&str],
+) -> Vec<Chunk> {
+    let opts = ChunkOptions {
+        target_min_tokens: 150,
+        target_max_tokens: 600,
+        hard_max_tokens: 1_200,
+        overlap_tokens: 0,
+    };
+    let lines: Vec<&str> = source.lines().collect();
+    let mut starts = Vec::new();
+    let mut pending_prefix_start: Option<usize> = None;
+    for (i, line) in lines.iter().enumerate() {
+        let t = line.trim();
+        if prefix_markers.iter().any(|marker| t.starts_with(marker)) {
+            pending_prefix_start.get_or_insert(i);
+        }
+        if boundary(t) {
+            starts.push(pending_prefix_start.take().unwrap_or(i));
+        }
+        if !prefix_markers.iter().any(|marker| t.starts_with(marker)) && !t.is_empty() {
+            pending_prefix_start = None;
+        }
+    }
+    let chunk_type = if matches!(language, "wgsl" | "hlsl" | "glsl") {
+        "shader_symbol"
+    } else {
+        "code_symbol"
+    };
+    emit_prefix_chunks(
+        file_path,
+        language,
+        fallback_type,
+        chunk_type,
+        source,
+        starts,
+        infer_title,
+        &opts,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn emit_prefix_chunks(
+    file_path: &str,
+    language: &str,
+    fallback_type: &str,
+    chunk_type: &str,
+    source: &str,
+    mut starts: Vec<usize>,
+    infer_title: fn(&str) -> Option<String>,
+    opts: &ChunkOptions,
+) -> Vec<Chunk> {
+    let lines: Vec<&str> = source.lines().collect();
+    starts.sort_unstable();
+    starts.dedup();
+    if starts.is_empty() {
+        return split_plain_blocks(file_path, language, fallback_type, vec![], source, opts);
+    }
+    starts.push(lines.len());
+    let mut chunks = Vec::new();
+    for pair in starts.windows(2) {
+        let start = pair[0];
+        let end = pair[1];
+        let text = line_range_text(&lines, start, end);
+        chunks.push(make_chunk(
+            file_path,
+            language,
+            chunk_type,
+            infer_title(&text),
+            vec![],
+            start + 1,
+            end,
+            text,
+        ));
+    }
+    chunks
+}
+
+fn is_csharp_boundary(line: &str) -> bool {
+    let visibility = [
+        "public ",
+        "private ",
+        "protected ",
+        "internal ",
+        "static ",
+        "sealed ",
+        "abstract ",
+        "partial ",
+    ];
+    let declarations = [
+        "class ",
+        "struct ",
+        "record ",
+        "interface ",
+        "enum ",
+        "namespace ",
+    ];
+    declarations.iter().any(|kw| line.starts_with(kw))
+        || visibility.iter().any(|v| {
+            line.starts_with(v)
+                && (line.contains(" class ")
+                    || line.contains(" struct ")
+                    || line.contains(" record ")
+                    || line.contains(" interface ")
+                    || line.contains(" enum ")
+                    || line.contains('(')
+                    || line.contains(" get;")
+                    || line.contains(" set;"))
+        })
+}
+
+fn infer_csharp_title(text: &str) -> Option<String> {
+    for line in text.lines() {
+        let t = line.trim();
+        for kw in [
+            "class ",
+            "struct ",
+            "record ",
+            "interface ",
+            "enum ",
+            "namespace ",
+        ] {
+            if let Some(index) = t.find(kw) {
+                let rest = &t[index + kw.len()..];
+                return Some(first_symbol(rest, &['<', '(', ':', '{', ';']));
+            }
+        }
+        if t.contains('(') && t.ends_with('{') {
+            let before_paren = t.split('(').next().unwrap_or(t);
+            return before_paren
+                .split_whitespace()
+                .last()
+                .map(|s| s.to_string());
+        }
+    }
+    None
+}
+
+fn is_cpp_boundary(line: &str) -> bool {
+    line.starts_with("namespace ")
+        || line.starts_with("class ")
+        || line.starts_with("struct ")
+        || line.starts_with("enum ")
+        || line.starts_with("union ")
+        || line.starts_with("typedef ")
+        || line.starts_with("using ")
+        || line.starts_with("#define ")
+        || line.starts_with("#include ")
+        || line.starts_with("template")
+        || looks_like_cpp_function(line)
+}
+
+fn looks_like_cpp_function(line: &str) -> bool {
+    if !line.contains('(')
+        || line.starts_with("if ")
+        || line.starts_with("for ")
+        || line.starts_with("while ")
+    {
+        return false;
+    }
+    line.ends_with('{') || line.ends_with(';')
+}
+
+fn infer_cpp_title(text: &str) -> Option<String> {
+    for line in text.lines() {
+        let t = line.trim();
+        for kw in [
+            "namespace ",
+            "class ",
+            "struct ",
+            "enum ",
+            "union ",
+            "typedef ",
+            "using ",
+        ] {
+            if let Some(rest) = t.strip_prefix(kw) {
+                return Some(first_symbol(rest, &['<', ':', '{', ';', '=']));
+            }
+        }
+        if let Some(rest) = t.strip_prefix("#define ") {
+            return Some(format!("macro {}", first_symbol(rest, &['('])));
+        }
+        if looks_like_cpp_function(t) {
+            let before_paren = t.split('(').next().unwrap_or(t);
+            return before_paren
+                .split_whitespace()
+                .last()
+                .map(|s| s.trim_matches('*').trim_matches('&').to_string());
+        }
+    }
+    None
+}
+
+fn is_java_boundary(line: &str) -> bool {
+    line.contains(" class ")
+        || line.starts_with("class ")
+        || line.contains(" interface ")
+        || line.starts_with("interface ")
+        || line.contains(" enum ")
+        || line.starts_with("enum ")
+        || line.contains(" record ")
+        || line.starts_with("record ")
+        || line.contains(" @interface ")
+        || looks_like_java_method(line)
+}
+
+fn looks_like_java_method(line: &str) -> bool {
+    let vis = [
+        "public ",
+        "private ",
+        "protected ",
+        "static ",
+        "final ",
+        "abstract ",
+    ];
+    line.contains('(')
+        && line.ends_with('{')
+        && vis.iter().any(|v| line.starts_with(v) || line.contains(v))
+}
+
+fn infer_java_title(text: &str) -> Option<String> {
+    for line in text.lines() {
+        let t = line.trim();
+        for kw in [
+            " class ",
+            "class ",
+            " interface ",
+            "interface ",
+            " enum ",
+            "enum ",
+            " record ",
+            "record ",
+        ] {
+            if let Some(index) = t.find(kw) {
+                let rest = &t[index + kw.len()..];
+                return Some(first_symbol(rest, &['<', '(', '{']));
+            }
+        }
+        if looks_like_java_method(t) {
+            return t
+                .split('(')
+                .next()
+                .and_then(|before| before.split_whitespace().last())
+                .map(|s| s.to_string());
+        }
+    }
+    None
+}
+
+fn is_kotlin_boundary(line: &str) -> bool {
+    line.starts_with("class ")
+        || line.starts_with("data class ")
+        || line.starts_with("sealed class ")
+        || line.starts_with("interface ")
+        || line.starts_with("object ")
+        || line.starts_with("enum class ")
+        || line.starts_with("fun ")
+        || line.starts_with("suspend fun ")
+        || line.starts_with("inline fun ")
+}
+
+fn infer_kotlin_title(text: &str) -> Option<String> {
+    infer_prefixed_title(
+        text,
+        &[
+            "data class ",
+            "sealed class ",
+            "enum class ",
+            "class ",
+            "interface ",
+            "object ",
+            "suspend fun ",
+            "inline fun ",
+            "fun ",
+        ],
+        &['<', '(', ':'],
+    )
+}
+
+fn is_swift_boundary(line: &str) -> bool {
+    line.starts_with("class ")
+        || line.starts_with("struct ")
+        || line.starts_with("enum ")
+        || line.starts_with("protocol ")
+        || line.starts_with("extension ")
+        || line.starts_with("actor ")
+        || line.starts_with("func ")
+        || line.starts_with("public func ")
+        || line.starts_with("private func ")
+        || line.starts_with("internal func ")
+        || line.starts_with("var ")
+        || line.starts_with("let ")
+}
+
+fn infer_swift_title(text: &str) -> Option<String> {
+    infer_prefixed_title(
+        text,
+        &[
+            "public func ",
+            "private func ",
+            "internal func ",
+            "func ",
+            "class ",
+            "struct ",
+            "enum ",
+            "protocol ",
+            "extension ",
+            "actor ",
+            "var ",
+            "let ",
+        ],
+        &['<', '(', ':', '='],
+    )
+}
+
+fn push_sql_statement(
+    file_path: &str,
+    chunks: &mut Vec<Chunk>,
+    opts: &ChunkOptions,
+    statement: &str,
+    start_line: usize,
+    end_line: usize,
+) {
+    let title = infer_sql_title(statement);
+    if estimate_tokens(statement) > opts.hard_max_tokens {
+        chunks.extend(split_plain_blocks(
+            file_path,
+            "sql",
+            "sql_statement",
+            title.clone().map(|t| vec![t]).unwrap_or_default(),
+            statement,
+            opts,
+        ));
+    } else {
+        chunks.push(make_chunk(
+            file_path,
+            "sql",
+            "sql_statement",
+            title.clone(),
+            title.map(|t| vec![t]).unwrap_or_default(),
+            start_line,
+            end_line,
+            statement.trim().to_string(),
+        ));
+    }
+}
+
+fn infer_sql_title(statement: &str) -> Option<String> {
+    let original = statement
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty() && !line.starts_with("--"))?;
+    let normalized = original.to_ascii_lowercase();
+    for prefix in [
+        "create table ",
+        "create view ",
+        "create materialized view ",
+        "create function ",
+        "create trigger ",
+        "create index ",
+        "alter table ",
+        "drop table ",
+        "insert into ",
+        "update ",
+        "delete from ",
+    ] {
+        if normalized.starts_with(prefix) {
+            let rest = &original[prefix.len()..];
+            return Some(format!(
+                "{}{}",
+                prefix,
+                rest.split_whitespace()
+                    .next()
+                    .unwrap_or("")
+                    .trim_matches('"')
+            ));
+        }
+    }
+    original.split_whitespace().next().map(|s| s.to_string())
+}
+
+fn infer_xml_title(text: &str) -> Option<String> {
+    let first = text.lines().find(|line| !line.trim().is_empty())?.trim();
+    let tag = first
+        .trim_start_matches('<')
+        .split([' ', '>', '/'])
+        .next()
+        .unwrap_or("xml");
+    let id = extract_attr(first, "id");
+    let class = extract_attr(first, "class");
+    match (id, class) {
+        (Some(id), _) => Some(format!("{tag}#{id}")),
+        (_, Some(class)) => Some(format!("{tag}.{class}")),
+        _ => Some(tag.to_string()),
+    }
+}
+
+fn is_lua_boundary(line: &str) -> bool {
+    line.starts_with("function ")
+        || line.starts_with("local function ")
+        || line.contains(" = function(")
+        || (line.contains(':') && line.contains("function("))
+}
+
+fn infer_lua_title(text: &str) -> Option<String> {
+    for line in text.lines() {
+        let t = line.trim();
+        if let Some(rest) = t.strip_prefix("local function ") {
+            return Some(rest.split('(').next().unwrap_or(rest).to_string());
+        }
+        if let Some(rest) = t.strip_prefix("function ") {
+            return Some(rest.split('(').next().unwrap_or(rest).to_string());
+        }
+        if let Some((name, _)) = t.split_once(" = function") {
+            return Some(name.trim().to_string());
+        }
+    }
+    None
+}
+
+fn is_shader_boundary(line: &str) -> bool {
+    line.starts_with("struct ")
+        || line.starts_with("fn ")
+        || line.starts_with("void ")
+        || line.starts_with("float")
+        || line.starts_with("vec")
+        || line.starts_with("mat")
+        || line.starts_with("@vertex")
+        || line.starts_with("@fragment")
+        || line.starts_with("@compute")
+        || line.starts_with("cbuffer ")
+        || line.starts_with("Texture")
+        || line.starts_with("Sampler")
+}
+
+fn infer_shader_title(text: &str) -> Option<String> {
+    for line in text.lines() {
+        let t = line.trim();
+        for prefix in ["struct ", "fn ", "void ", "cbuffer "] {
+            if let Some(rest) = t.strip_prefix(prefix) {
+                return Some(first_symbol(rest, &['(', '{', ':']));
+            }
+        }
+        if t.starts_with("@vertex") {
+            return Some("vertex_entry".to_string());
+        }
+        if t.starts_with("@fragment") {
+            return Some("fragment_entry".to_string());
+        }
+        if t.starts_with("@compute") {
+            return Some("compute_entry".to_string());
+        }
+    }
+    None
+}
+
+fn infer_docker_stage_title(text: &str) -> Option<String> {
+    let first = text.lines().find(|line| !line.trim().is_empty())?.trim();
+    if let Some((_, alias)) = first.to_ascii_lowercase().split_once(" as ") {
+        return Some(alias.trim().to_string());
+    }
+    Some(first.to_string())
+}
+
+fn is_shell_function(line: &str) -> bool {
+    line.ends_with("() {") || line.starts_with("function ") && line.ends_with('{')
+}
+
+fn is_shell_heading_comment(line: &str) -> bool {
+    line.starts_with("# ") && line.len() > 4 && !line.starts_with("#!/")
+}
+
+fn infer_shell_title(text: &str) -> Option<String> {
+    for line in text.lines() {
+        let t = line.trim();
+        if t.ends_with("() {") {
+            return Some(t.trim_end_matches("() {").to_string());
+        }
+        if let Some(rest) = t.strip_prefix("function ") {
+            return Some(rest.trim_end_matches('{').trim().to_string());
+        }
+        if let Some(rest) = t.strip_prefix("# ") {
+            return Some(rest.to_string());
+        }
+    }
+    None
+}
+
+fn is_make_target(line: &str) -> bool {
+    if line.starts_with('\t') || line.trim_start().starts_with('#') {
+        return false;
+    }
+    line.contains(':') && !line.contains(":=") && !line.contains("?=") && !line.contains("+=")
+}
+
+fn infer_make_title(text: &str) -> Option<String> {
+    for line in text.lines() {
+        if is_make_target(line) {
+            return Some(line.split(':').next().unwrap_or(line).trim().to_string());
+        }
+    }
+    None
+}
+
+fn infer_prefixed_title(text: &str, prefixes: &[&str], separators: &[char]) -> Option<String> {
+    for line in text.lines() {
+        let t = line.trim();
+        for prefix in prefixes {
+            if let Some(rest) = t.strip_prefix(prefix) {
+                return Some(first_symbol(rest, separators));
+            }
+        }
+    }
+    None
+}
+
+fn first_symbol(rest: &str, separators: &[char]) -> String {
+    rest.split(|c: char| separators.contains(&c) || c.is_whitespace())
+        .next()
+        .unwrap_or(rest)
+        .trim_end_matches(';')
+        .to_string()
+}
+
 fn infer_code_language(file_path: &str) -> &'static str {
     let ext = file_path
         .rsplit('.')
@@ -2382,6 +3395,22 @@ fn infer_code_language(file_path: &str) -> &'static str {
         "json" => "json",
         "toml" | "tmol" => "toml",
         "yml" | "yaml" => "yaml",
+        "cs" => "csharp",
+        "c" => "c",
+        "cc" | "cpp" | "cxx" => "cpp",
+        "h" | "hh" | "hpp" | "hxx" => "c_or_cpp_header",
+        "java" => "java",
+        "kt" | "kts" => "kotlin",
+        "swift" => "swift",
+        "sql" => "sql",
+        "xml" => "xml",
+        "svg" => "svg",
+        "lua" => "lua",
+        "glsl" | "vert" | "frag" | "comp" => "glsl",
+        "hlsl" => "hlsl",
+        "wgsl" => "wgsl",
+        "sh" | "bash" | "zsh" => "shell",
+        "mk" => "makefile",
         _ => "code",
     }
 }

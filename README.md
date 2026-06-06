@@ -28,7 +28,7 @@ run the `export PATH=...` command printed by the installer.
 Install a specific release tag:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Elephant-Hand-Games/elephant-never-forgets-cli/main/scripts/install.sh | ENF_VERSION=v1.3.0 sh
+curl -fsSL https://raw.githubusercontent.com/Elephant-Hand-Games/elephant-never-forgets-cli/main/scripts/install.sh | ENF_VERSION=v1.3.1 sh
 ```
 
 Install somewhere else:

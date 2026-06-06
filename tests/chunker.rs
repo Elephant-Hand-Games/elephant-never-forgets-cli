@@ -113,3 +113,138 @@ anyhow = "1"
         .iter()
         .any(|chunk| chunk.text.contains("Section: dependencies")));
 }
+
+#[test]
+fn smart_chunker_dispatches_additional_code_families() {
+    let cases = [
+        (
+            "src/Game.cs",
+            r#"namespace App;
+/// <summary>Player loop.</summary>
+public class Player {
+    public void Awake() {}
+    public void Update() {}
+}
+"#,
+            "Language: csharp",
+            "Symbol: Player",
+        ),
+        (
+            "src/engine.cpp",
+            r#"template <typename T>
+class Engine {
+public:
+  void start();
+};
+
+void tick() {}
+"#,
+            "Language: cpp",
+            "Symbol: Engine",
+        ),
+        (
+            "src/App.java",
+            r#"package app;
+public class App {
+  public void run() {}
+}
+"#,
+            "Language: java",
+            "Symbol: App",
+        ),
+        (
+            "src/App.kt",
+            r#"data class User(val name: String)
+fun render() {}
+"#,
+            "Language: kotlin",
+            "Symbol: User",
+        ),
+        (
+            "src/App.swift",
+            r#"struct AppView {
+  func render() {}
+}
+"#,
+            "Language: swift",
+            "Symbol: AppView",
+        ),
+        (
+            "scripts/install.sh",
+            r#"# Install
+setup() {
+  echo ok
+}
+"#,
+            "Language: shell",
+            "Symbol: Install",
+        ),
+        (
+            "game/init.lua",
+            r#"local function boot()
+end
+"#,
+            "Language: lua",
+            "Symbol: boot",
+        ),
+        (
+            "shader/main.wgsl",
+            r#"struct VertexOut {}
+@vertex
+fn vs_main() {}
+"#,
+            "Language: wgsl",
+            "Symbol: VertexOut",
+        ),
+    ];
+
+    for (path, source, language, symbol) in cases {
+        let joined = chunker::process_file_for_rag(path, source.as_bytes())
+            .iter()
+            .map(|chunk| chunk.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n---\n");
+        assert!(joined.contains(language), "{path} missing {language}");
+        assert!(joined.contains(symbol), "{path} missing {symbol}");
+    }
+}
+
+#[test]
+fn smart_chunker_dispatches_schema_markup_and_build_files() {
+    let cases = [
+        (
+            "db/schema.sql",
+            "CREATE TABLE notes (id integer);\nCREATE INDEX notes_id ON notes(id);\n",
+            "Language: sql",
+            "Symbol: create table notes",
+        ),
+        (
+            "assets/icon.svg",
+            r#"<svg><defs id="icons"></defs><g id="mark"><path d="M0 0" /></g></svg>"#,
+            "Language: svg",
+            "Symbol: svg",
+        ),
+        (
+            "Dockerfile",
+            "FROM rust:1 AS builder\nRUN cargo build\nFROM debian:stable\n",
+            "Language: dockerfile",
+            "Symbol: builder",
+        ),
+        (
+            "Makefile",
+            "build:\n\tcargo build\n\ntest:\n\tcargo test\n",
+            "Language: makefile",
+            "Symbol: build",
+        ),
+    ];
+
+    for (path, source, language, symbol) in cases {
+        let joined = chunker::process_file_for_rag(path, source.as_bytes())
+            .iter()
+            .map(|chunk| chunk.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n---\n");
+        assert!(joined.contains(language), "{path} missing {language}");
+        assert!(joined.contains(symbol), "{path} missing {symbol}");
+    }
+}
