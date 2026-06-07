@@ -212,7 +212,7 @@ fn file_level_search_returns_file_results() {
 }
 
 #[test]
-fn provider_overrides_use_a_distinct_profile_for_search() {
+fn provider_overrides_reuse_compatible_profiles_for_search() {
     let temp = setup_indexed_project();
     let default_config = load_config(temp.path());
     let default_profile = embed::active_profile(&default_config);
@@ -224,8 +224,10 @@ fn provider_overrides_use_a_distinct_profile_for_search() {
             "local",
             "--provider",
             "ollama",
+            "--endpoint",
+            "http://127.0.0.1:11434/v1/embeddings",
             "--model",
-            "nomic-embed-text",
+            &default_profile.model,
             "--json",
         ])
         .assert()
@@ -235,10 +237,11 @@ fn provider_overrides_use_a_distinct_profile_for_search() {
         .clone();
     let json: Value = serde_json::from_slice(&output).unwrap();
 
-    assert_ne!(
+    assert_eq!(
         json["profile"]["hash"].as_str().unwrap(),
         default_profile.profile_hash
     );
+    assert_eq!(json["profile"]["provider"].as_str().unwrap(), "ollama");
     assert!(json["warnings"][0]
         .as_str()
         .unwrap()

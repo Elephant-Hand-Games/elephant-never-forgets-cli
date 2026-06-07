@@ -271,7 +271,7 @@ fn models_install_dry_run_reports_marker_without_writing_it() {
         .unwrap()
         .current_dir(temp.path())
         .env("ENF_SKIP_NATIVE_MODEL_LOAD", "1")
-        .args(["init", "--provider", "ollama"])
+        .args(["init", "--provider", "ollama", "--model-cache", "project"])
         .assert()
         .success();
 
