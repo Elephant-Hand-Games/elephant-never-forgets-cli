@@ -218,7 +218,19 @@ pub fn migrate(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
-pub fn upsert_embedding_profile(conn: &Connection, profile: &EmbeddingProfile) -> Result<i64> {
+pub fn upsert_embedding_profile(conn: &Connection, profile: &mut EmbeddingProfile) -> Result<i64> {
+    if let Some(stored_profile) = get_embedding_profile_by_hash(conn, &profile.profile_hash)? {
+        touch_embedding_profile(conn, stored_profile.id, profile)?;
+        profile.profile_hash = stored_profile.profile.profile_hash;
+        return Ok(stored_profile.id);
+    }
+
+    if let Some(stored_profile) = find_compatible_embedding_profile(conn, profile)? {
+        touch_embedding_profile(conn, stored_profile.id, profile)?;
+        profile.profile_hash = stored_profile.profile.profile_hash;
+        return Ok(stored_profile.id);
+    }
+
     conn.execute(
         "INSERT INTO embedding_profiles (
             profile_hash,
@@ -235,7 +247,19 @@ pub fn upsert_embedding_profile(conn: &Connection, profile: &EmbeddingProfile) -
             serialization_version,
             created_at
         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, datetime('now'))
-        ON CONFLICT(profile_hash) DO UPDATE SET profile_hash = excluded.profile_hash",
+        ON CONFLICT(profile_hash) DO UPDATE SET
+            provider = excluded.provider,
+            engine = excluded.engine,
+            model = excluded.model,
+            variant = excluded.variant,
+            endpoint = excluded.endpoint,
+            dimensions = excluded.dimensions,
+            document_prefix = excluded.document_prefix,
+            query_prefix = excluded.query_prefix,
+            normalizer_version = excluded.normalizer_version,
+            chunker_version = excluded.chunker_version,
+            serialization_version = excluded.serialization_version,
+            created_at = datetime('now')",
         params![
             &profile.profile_hash,
             &profile.provider,
@@ -255,8 +279,8 @@ pub fn upsert_embedding_profile(conn: &Connection, profile: &EmbeddingProfile) -
 }
 
 pub fn upsert_active_embedding_profile(conn: &Connection, config: &Config) -> Result<i64> {
-    let profile = active_profile(config);
-    upsert_embedding_profile(conn, &profile)
+    let mut profile = active_profile(config);
+    upsert_embedding_profile(conn, &mut profile)
 }
 
 pub fn embedding_profile_id(conn: &Connection, profile_hash: &str) -> Result<i64> {
@@ -327,6 +351,93 @@ fn get_embedding_profile_by_hash(
     )
     .optional()
     .map_err(Into::into)
+}
+
+fn find_compatible_embedding_profile(
+    conn: &Connection,
+    profile: &EmbeddingProfile,
+) -> Result<Option<StoredEmbeddingProfile>> {
+    let dimensions = profile.dimensions as i64;
+    conn.query_row(
+        "SELECT id, profile_hash, provider, engine, model, variant, endpoint, dimensions,
+                document_prefix, query_prefix, normalizer_version, chunker_version,
+                serialization_version, created_at
+         FROM embedding_profiles
+        WHERE model = ?1
+           AND dimensions = ?2
+           AND document_prefix = ?3
+           AND query_prefix = ?4
+           AND normalizer_version = ?5
+           AND chunker_version = ?6
+           AND serialization_version = ?7
+         ORDER BY created_at DESC, id DESC
+         LIMIT 1",
+        params![
+            &profile.model,
+            dimensions,
+            &profile.document_prefix,
+            &profile.query_prefix,
+            &profile.normalizer_version,
+            &profile.chunker_version,
+            &profile.serialization_version,
+        ],
+        |row| {
+            Ok(StoredEmbeddingProfile {
+                id: row.get(0)?,
+                profile: EmbeddingProfile {
+                    profile_hash: row.get(1)?,
+                    provider: row.get(2)?,
+                    engine: row.get(3)?,
+                    model: row.get(4)?,
+                    variant: row.get(5)?,
+                    endpoint: row.get(6)?,
+                    dimensions: row.get::<_, i64>(7)? as usize,
+                    document_prefix: row.get(8)?,
+                    query_prefix: row.get(9)?,
+                    normalizer_version: row.get(10)?,
+                    chunker_version: row.get(11)?,
+                    serialization_version: row.get(12)?,
+                },
+                created_at: row.get(13)?,
+            })
+        },
+    )
+    .optional()
+    .map_err(Into::into)
+}
+
+fn touch_embedding_profile(conn: &Connection, id: i64, profile: &EmbeddingProfile) -> Result<()> {
+    conn.execute(
+        "UPDATE embedding_profiles
+         SET provider = ?1,
+             engine = ?2,
+             model = ?3,
+             variant = ?4,
+             endpoint = ?5,
+             dimensions = ?6,
+             document_prefix = ?7,
+             query_prefix = ?8,
+             normalizer_version = ?9,
+             chunker_version = ?10,
+             serialization_version = ?11,
+             created_at = datetime('now')
+         WHERE id = ?12",
+        params![
+            &profile.provider,
+            profile.engine.as_deref(),
+            &profile.model,
+            profile.variant.as_deref(),
+            profile.endpoint.as_deref(),
+            profile.dimensions as i64,
+            &profile.document_prefix,
+            &profile.query_prefix,
+            &profile.normalizer_version,
+            &profile.chunker_version,
+            &profile.serialization_version,
+            id,
+        ],
+    )?;
+    Ok(())
 }
 
 pub fn chunks_missing_embeddings(

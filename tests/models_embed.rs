@@ -14,9 +14,10 @@ fn profile_hash_is_deterministic_and_uses_profile_fields() {
     let profile = active_profile(&Config::default());
     let baseline = profile_hash(&profile);
 
-    let mut endpoint_variant = profile.clone();
-    endpoint_variant.endpoint = Some("https://example.invalid/embed".into());
-    assert_ne!(baseline, profile_hash(&endpoint_variant));
+    let mut provider_variant = profile.clone();
+    provider_variant.provider = "openai-compatible".into();
+    provider_variant.endpoint = Some("https://alt.example.invalid/v1/embeddings".into());
+    assert_eq!(baseline, profile_hash(&provider_variant));
 
     let mut prefix_variant = profile.clone();
     prefix_variant.document_prefix = "search_document: alt ".into();

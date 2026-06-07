@@ -62,8 +62,8 @@ fn seed_agent_vector(root: &std::path::Path, query: &str) {
     config.embedding.dimensions = 3;
     elephant_never_forgets::config::write_config(&root.join(".enf.toml"), &config).unwrap();
     let conn = Connection::open(root.join(".enf/index.sqlite")).unwrap();
-    let profile = embed::active_profile(&config);
-    let profile_id = db::upsert_embedding_profile(&conn, &profile).unwrap();
+    let mut profile = embed::active_profile(&config);
+    let profile_id = db::upsert_embedding_profile(&conn, &mut profile).unwrap();
     let agent_chunk_id: i64 = conn
         .query_row(
             "SELECT c.id

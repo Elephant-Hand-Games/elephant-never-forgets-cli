@@ -13,10 +13,10 @@ pub fn run(args: SearchArgs, retrieve: bool) -> Result<()> {
     let mut config = crate::config::load()?;
     crate::config::apply_provider_overrides(&mut config, &args.provider);
     crate::config::validate(&config)?;
-    let profile = crate::embed::active_profile(&config);
+    let mut profile = crate::embed::active_profile(&config);
     let cwd = std::env::current_dir()?;
     let conn = crate::db::open_or_create(&cwd.join(&config.state.db_path))?;
-    let profile_id = crate::db::upsert_embedding_profile(&conn, &profile)?;
+    let profile_id = crate::db::upsert_embedding_profile(&conn, &mut profile)?;
     let normalized_query = ranking::normalize_query(&args.query);
     let mode = args
         .mode

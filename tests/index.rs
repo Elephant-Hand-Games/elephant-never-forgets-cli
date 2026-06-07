@@ -467,7 +467,8 @@ fn deleting_files_removes_chunks_and_embeddings_after_reopening_database() {
     {
         let conn = db::open_or_create(&root.join(".enf/index.sqlite")).unwrap();
         let profile = embed::active_profile(&config);
-        let profile_id = db::upsert_embedding_profile(&conn, &profile).unwrap();
+        let mut profile = profile;
+        let profile_id = db::upsert_embedding_profile(&conn, &mut profile).unwrap();
         let chunk_id: i64 = conn
             .query_row("SELECT id FROM chunks LIMIT 1", [], |row| row.get(0))
             .unwrap();

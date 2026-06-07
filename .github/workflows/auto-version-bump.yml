@@ -1,0 +1,77 @@
+name: Auto Version Bump
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  bump-version:
+    runs-on: ubuntu-latest
+    if: github.actor != 'github-actions[bot]'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Auto bump patch version if not manually changed
+        run: |
+          set -euo pipefail
+
+          current_version="$(awk -F'"' '/^version = / { print $2; exit }' Cargo.toml)"
+          prev_version="$(git show HEAD^:Cargo.toml | awk -F'"' '/^version = / { print $2; exit }' || true)"
+
+          if [ -z "${prev_version}" ]; then
+            echo "No previous commit version to compare; skipping"
+            exit 0
+          fi
+
+          if [ "${current_version}" != "${prev_version}" ]; then
+            echo "Version already changed in this commit (${prev_version} -> ${current_version}); skipping"
+            exit 0
+          fi
+
+          if ! [[ "${current_version}" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+            echo "Unsupported version format: ${current_version}; skipping"
+            exit 0
+          fi
+
+          major="${BASH_REMATCH[1]}"
+          minor="${BASH_REMATCH[2]}"
+          patch="${BASH_REMATCH[3]}"
+          next_patch=$((patch + 1))
+          next_version="${major}.${minor}.${next_patch}"
+
+          echo "Auto-bumping version ${current_version} -> ${next_version}"
+
+          sed -i "s/version = \"${current_version}\"/version = \"${next_version}\"/" Cargo.toml
+
+          awk -v version="${next_version}" '
+            /\[\[package\]\]/ { in_package = 0 }
+            $0 ~ /^name = "elephant-never-forgets"$/ { in_package = 1 }
+            in_package && $0 ~ /^version = / {
+              $0 = "version = \"" version "\""
+              in_package = 0
+            }
+            { print }
+          ' Cargo.lock > Cargo.lock.bump
+          mv Cargo.lock.bump Cargo.lock
+
+          if grep -q "ENF_VERSION=v${current_version}" README.md; then
+            sed -i "s/ENF_VERSION=v${current_version}/ENF_VERSION=v${next_version}/" README.md
+          fi
+
+          if git diff --quiet -- Cargo.toml Cargo.lock README.md; then
+            echo "Version bump produced no file changes"
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Cargo.toml Cargo.lock README.md
+          git commit -m "chore: auto bump patch version"
+          git push

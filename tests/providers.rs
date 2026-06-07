@@ -209,13 +209,30 @@ fn active_profile_matches_provider_profile_for_all_providers() {
 }
 
 #[test]
-fn endpoint_changes_embedding_profile_identity() {
+fn endpoint_changes_embedding_profile_identity_is_ignored() {
     let mut first = base_config(Provider::Http);
     first.embedding.endpoint = Some("https://example.invalid/a".into());
     let mut second = base_config(Provider::Http);
     second.embedding.endpoint = Some("https://example.invalid/b".into());
 
-    assert_ne!(
+    assert_eq!(
+        embed::active_profile(&first).profile_hash,
+        embed::active_profile(&second).profile_hash
+    );
+}
+
+#[test]
+fn provider_switch_between_remote_and_native_keeps_embedding_identity() {
+    let mut first = base_config(Provider::Http);
+    first.embedding.model = "nomic-embed-text-v1.5".into();
+    first.embedding.dimensions = 768;
+    first.embedding.endpoint = Some("https://example.invalid/v1/embeddings".into());
+
+    let mut second = base_config(Provider::Native);
+    second.embedding.model = "nomic-embed-text-v1.5".into();
+    second.embedding.dimensions = 768;
+
+    assert_eq!(
         embed::active_profile(&first).profile_hash,
         embed::active_profile(&second).profile_hash
     );

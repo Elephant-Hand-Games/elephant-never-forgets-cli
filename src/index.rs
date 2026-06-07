@@ -248,8 +248,8 @@ fn maybe_embed_missing_chunks(
     }
 
     let mut provider = providers::build_provider(config)?;
-    let profile = provider.profile();
-    let profile_id = db::upsert_embedding_profile(conn, &profile)?;
+    let mut profile = provider.profile();
+    let profile_id = db::upsert_embedding_profile(conn, &mut profile)?;
     if embed_options.reembed {
         delete_embeddings_for_paths(conn, profile_id, reembed_paths)?;
     }

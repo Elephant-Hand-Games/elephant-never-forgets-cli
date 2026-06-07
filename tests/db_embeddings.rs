@@ -10,8 +10,8 @@ fn profile_with_dimensions(mut config: Config, dimensions: usize) -> embed::Embe
 fn profile_scoped_chunk_embeddings_round_trip() {
     let temp = tempfile::tempdir().unwrap();
     let conn = db::open_or_create(&temp.path().join(".enf/index.sqlite")).unwrap();
-    let profile = profile_with_dimensions(Config::default(), 3);
-    let profile_id = db::upsert_embedding_profile(&conn, &profile).unwrap();
+    let mut profile = profile_with_dimensions(Config::default(), 3);
+    let profile_id = db::upsert_embedding_profile(&conn, &mut profile).unwrap();
 
     conn.execute(
         "INSERT INTO files(path, hash, size_bytes, indexed_at, content)
@@ -55,8 +55,8 @@ fn profile_scoped_chunk_embeddings_round_trip() {
 fn chunk_embeddings_reject_profile_dimension_mismatch() {
     let temp = tempfile::tempdir().unwrap();
     let conn = db::open_or_create(&temp.path().join(".enf/index.sqlite")).unwrap();
-    let profile = profile_with_dimensions(Config::default(), 3);
-    let profile_id = db::upsert_embedding_profile(&conn, &profile).unwrap();
+    let mut profile = profile_with_dimensions(Config::default(), 3);
+    let profile_id = db::upsert_embedding_profile(&conn, &mut profile).unwrap();
 
     conn.execute(
         "INSERT INTO files(path, hash, size_bytes, indexed_at, content)
@@ -80,15 +80,46 @@ fn chunk_embeddings_reject_profile_dimension_mismatch() {
 }
 
 #[test]
+fn upsert_reuses_existing_profile_for_matching_model_and_dimensions() {
+    let temp = tempfile::tempdir().unwrap();
+    let conn = db::open_or_create(&temp.path().join(".enf/index.sqlite")).unwrap();
+
+    let mut baseline = embed::active_profile(&Config::default());
+    baseline.provider = "http".into();
+    baseline.endpoint = Some("https://example.invalid/v1/embeddings-old".into());
+    baseline.engine = None;
+    baseline.profile_hash = "legacy-hash-http".into();
+    let baseline_id = db::upsert_embedding_profile(&conn, &mut baseline).unwrap();
+
+    let mut switched = baseline.clone();
+    switched.provider = "native".into();
+    switched.engine = Some("candle".into());
+    switched.endpoint = None;
+    switched.profile_hash = "legacy-hash-native".into();
+    let switched_id = db::upsert_embedding_profile(&conn, &mut switched).unwrap();
+
+    assert_eq!(baseline_id, switched_id);
+    assert_eq!(switched.profile_hash, baseline.profile_hash);
+    let provider: String = conn
+        .query_row(
+            "SELECT provider FROM embedding_profiles WHERE id = ?1",
+            [switched_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(provider, "native");
+}
+
+#[test]
 fn query_embeddings_are_profile_scoped_and_update_last_used() {
     let temp = tempfile::tempdir().unwrap();
     let conn = db::open_or_create(&temp.path().join(".enf/index.sqlite")).unwrap();
     let mut config = Config::default();
-    let first_profile = profile_with_dimensions(config.clone(), 2);
+    let mut first_profile = profile_with_dimensions(config.clone(), 2);
     config.embedding.document_prefix = "alternate document: ".into();
-    let second_profile = profile_with_dimensions(config, 2);
-    let first_profile_id = db::upsert_embedding_profile(&conn, &first_profile).unwrap();
-    let second_profile_id = db::upsert_embedding_profile(&conn, &second_profile).unwrap();
+    let mut second_profile = profile_with_dimensions(config, 2);
+    let first_profile_id = db::upsert_embedding_profile(&conn, &mut first_profile).unwrap();
+    let second_profile_id = db::upsert_embedding_profile(&conn, &mut second_profile).unwrap();
 
     db::upsert_query_embedding(&conn, first_profile_id, "agent rules", &[1.0, 0.0]).unwrap();
     db::upsert_query_embedding(&conn, second_profile_id, "agent rules", &[0.0, 1.0]).unwrap();
@@ -154,7 +185,7 @@ fn active_profile_streams_only_its_vectors_and_preserves_chunk_metadata() {
     let mut alternate_profile = active_profile.clone();
     alternate_profile.model = "alternate-embed-model".into();
     alternate_profile.profile_hash = embed::profile_hash(&alternate_profile);
-    let alternate_profile_id = db::upsert_embedding_profile(&conn, &alternate_profile).unwrap();
+    let alternate_profile_id = db::upsert_embedding_profile(&conn, &mut alternate_profile).unwrap();
 
     db::upsert_chunk_embedding(&conn, active_profile_id, 10, &[0.1, 0.2]).unwrap();
     db::upsert_chunk_embedding(&conn, active_profile_id, 11, &[0.3, 0.4]).unwrap();

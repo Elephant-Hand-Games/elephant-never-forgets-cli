@@ -74,11 +74,7 @@ pub fn profile_hash_with_fallback(
     fallback: Option<&EmbeddingFallbackConfig>,
 ) -> String {
     let mut hasher = blake3::Hasher::new();
-    update_hash_field(&mut hasher, "provider", &profile.provider);
-    update_optional_hash_field(&mut hasher, "engine", profile.engine.as_deref());
     update_hash_field(&mut hasher, "model", &profile.model);
-    update_optional_hash_field(&mut hasher, "variant", profile.variant.as_deref());
-    update_optional_hash_field(&mut hasher, "endpoint", profile.endpoint.as_deref());
     update_hash_field(&mut hasher, "dimensions", &profile.dimensions.to_string());
     update_hash_field(&mut hasher, "document_prefix", &profile.document_prefix);
     update_hash_field(&mut hasher, "query_prefix", &profile.query_prefix);
