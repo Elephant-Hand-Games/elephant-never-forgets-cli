@@ -771,7 +771,7 @@ checksum = "91622ff5e7162018101f2fea40d6ebf4a78bbe5a49736a2020649edf9693679e"
 
 [[package]]
 name = "elephant-never-forgets"
-version = "2.0.2"
+version = "2.0.3"
 dependencies = [
  "anyhow",
  "assert_cmd",
