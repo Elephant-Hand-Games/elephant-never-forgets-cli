@@ -39,12 +39,19 @@ pub fn run(args: ModelsArgs) -> Result<()> {
         ModelsCommand::Current(json) => print_model_status(&config, json.json),
         ModelsCommand::Install(install) => {
             let mut install_config = config.clone();
-            if let Some(model) = install.model {
+            if install.model.is_some() && install.provider.model.is_some() {
+                anyhow::bail!(
+                    "choose either positional MODEL or --model, not both.\nTry:\n  enf models install gemma --provider native\n  enf models install --model gemma --provider native"
+                );
+            }
+            if let Some(model) = install.model.clone() {
                 install_config.embedding.model = model;
             }
-            if let Some(variant) = install.variant {
+            crate::config::apply_provider_overrides(&mut install_config, &install.provider);
+            if let Some(variant) = install.provider.variant {
                 install_config.embedding.variant = Some(variant.into());
             }
+            crate::config::normalize_provider_defaults(&mut install_config);
             if install.dry_run {
                 return print_model_install_dry_run(&install_config, install.json);
             }

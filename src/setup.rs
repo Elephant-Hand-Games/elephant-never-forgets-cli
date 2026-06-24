@@ -48,6 +48,7 @@ pub fn run_config(args: ConfigArgs) -> Result<()> {
         Some(ConfigCommand::Explain(args)) => config_explain(args),
         Some(ConfigCommand::Validate(args)) => config_validate(args),
         Some(ConfigCommand::Edit) => config_edit(),
+        Some(ConfigCommand::Use(args)) => use_preset(args),
         Some(ConfigCommand::Set(args)) => config_set(args),
         Some(ConfigCommand::Diff(args)) => config_diff(args),
         Some(ConfigCommand::Doctor(args)) => crate::output::doctor(crate::cli::DoctorArgs {
@@ -195,19 +196,25 @@ fn show_preset(preset: PresetArg, json: bool) -> Result<()> {
 fn use_preset(args: SetupUseArgs) -> Result<()> {
     let mut config = config::load()?;
     apply_preset(&mut config, args.preset.clone());
+    if let Some(model) = args.model {
+        config.embedding.model = model;
+    }
+    config::normalize_provider_defaults(&mut config);
     if let Some(endpoint) = args.endpoint {
         config.embedding.endpoint = Some(endpoint);
     }
     if let Some(api_key_env) = args.api_key_env {
         config.embedding.api_key_env = Some(api_key_env);
     }
-    if let Some(model) = args.model {
-        config.embedding.model = model;
-    }
     if let Some(dimensions) = args.dimensions {
         config.embedding.dimensions = dimensions;
     }
-    write_or_preview(config, args.dry_run, args.json, "Updated embedding preset")
+    write_or_preview(
+        config,
+        args.dry_run,
+        args.json,
+        "Updated embedding preset. Rebuild changed embeddings with `enf index . --reembed` when switching model profiles.",
+    )
 }
 
 fn setup_reranker(args: SetupRerankerArgs) -> Result<()> {
@@ -397,10 +404,12 @@ fn config_set(args: ConfigSetArgs) -> Result<()> {
     let handled = match args.key.as_str() {
         "embedding.provider" => {
             config.embedding.provider = parse_provider(&args.value)?;
+            config::normalize_provider_defaults(&mut config);
             true
         }
         "embedding.model" => {
             config.embedding.model = args.value.clone();
+            config::normalize_provider_defaults(&mut config);
             true
         }
         "embedding.endpoint" => {

@@ -1014,7 +1014,10 @@ fn validate_fallback_embedding(config: &Config, fallback: &EmbeddingFallbackConf
     fallback_config.embedding.provider = fallback.provider.clone();
     fallback_config.embedding.endpoint = fallback.endpoint.clone();
     fallback_config.embedding.api_key_env = fallback.api_key_env.clone();
-    fallback_config.embedding.model = normalize_model_aliases(&config.embedding.model);
+    fallback_config.embedding.model = normalize_model_aliases_for_provider(
+        &config.embedding.model,
+        &fallback_config.embedding.provider,
+    );
     normalize_provider_defaults(&mut fallback_config);
 
     if fallback_config.embedding.provider == Provider::Native {
@@ -1090,7 +1093,8 @@ fn apply_init_overrides(config: &mut Config, args: &InitArgs) {
     if let Some(variant) = &args.variant {
         config.embedding.variant = Some(variant.clone().into());
     }
-    config.embedding.model = normalize_model_aliases(&config.embedding.model);
+    config.embedding.model =
+        normalize_model_aliases_for_provider(&config.embedding.model, &config.embedding.provider);
     if let Some(chunking) = args.chunking.clone().or(interactive.chunking) {
         config.index.chunking = chunking.into();
     }
@@ -1153,7 +1157,8 @@ fn apply_init_overrides(config: &mut Config, args: &InitArgs) {
 }
 
 pub fn normalize_provider_defaults(config: &mut Config) {
-    config.embedding.model = normalize_model_aliases(&config.embedding.model);
+    config.embedding.model =
+        normalize_model_aliases_for_provider(&config.embedding.model, &config.embedding.provider);
     match config.embedding.provider {
         Provider::Native => {
             config.embedding.engine = Some("candle".into());
@@ -1208,7 +1213,10 @@ pub fn apply_provider_overrides(config: &mut Config, overrides: &ProviderOverrid
     }
     if let Some(model) = &overrides.model {
         config.embedding.model = model.clone();
-        config.embedding.model = normalize_model_aliases(&config.embedding.model);
+        config.embedding.model = normalize_model_aliases_for_provider(
+            &config.embedding.model,
+            &config.embedding.provider,
+        );
         normalize_provider_defaults(config);
     }
     if let Some(variant) = &overrides.variant {
@@ -1227,14 +1235,17 @@ pub fn apply_provider_overrides(config: &mut Config, overrides: &ProviderOverrid
     }
 }
 
-fn normalize_model_aliases(model: &str) -> String {
+pub fn normalize_model_aliases_for_provider(model: &str, provider: &Provider) -> String {
     match model {
         "nomic" | "nomic-embed-text" | "nomic-embed-text-v1.5" | "nomic-embed-text-v2-moe" => {
             "nomic-embed-text-v1.5".into()
         }
-        "gemma" | "embeddinggemma-300m" | "google" | "google/embeddinggemma-300m" => {
+        "gemma" | "embeddinggemma-300m" | "google" | "google/embeddinggemma-300m"
+            if *provider == Provider::Native =>
+        {
             "google/embeddinggemma-300m".into()
         }
+        "gemma" | "embeddinggemma-300m" | "embeddinggemma:300m" => "embeddinggemma:300m".into(),
         _ => model.to_string(),
     }
 }
@@ -1252,7 +1263,7 @@ fn default_model_dimensions(config: &Config) -> usize {
 fn is_gemma_model(model: &str) -> bool {
     matches!(
         model,
-        "google/embeddinggemma-300m" | "embeddinggemma-300m" | "gemma"
+        "google/embeddinggemma-300m" | "embeddinggemma-300m" | "embeddinggemma:300m" | "gemma"
     )
 }
 

@@ -89,13 +89,18 @@ Precedence:
 ```text
 enf models list [--json]
 enf models current [--json]
-enf models install [model] [--variant <quantized|full>] [--json] [--dry-run]
+enf models install [model] [--provider <provider>] [--model <model>]
+                   [--variant <quantized|full>] [--endpoint <url>]
+                   [--api-key-env <env>] [--dimensions <n>] [--json] [--dry-run]
 enf models path [--json]
 enf models clean [--json] [--dry-run]
 ```
 
 `list` describes available packaged/local model choices. `current` shows the
-active project profile. `path` prints the resolved model cache path.
+active project profile. `install` accepts the same provider/model override shape
+as `index`, `search`, and `retrieve`; `gemma` resolves to the native Hugging Face
+ID when `--provider native` is selected. `path` prints the resolved model cache
+path.
 
 ## `index`
 
@@ -197,4 +202,3 @@ and what exact command fixes it?” Use `doctor --ci` in automation.
 enf update [--version <tag>] [--install-dir <path>] [--method <binary|cargo>]
            [--repo <owner/name>] [--dry-run]
 ```
-

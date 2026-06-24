@@ -121,6 +121,7 @@ Presets are first-class product modes: `local`, `code`, `docs`, `ollama`,
 enf models list
 enf models current --json
 enf models install
+enf models install gemma --provider native
 enf models install --dry-run
 enf models path
 enf models clean
@@ -199,6 +200,7 @@ a hidden alias for CI checks.
 enf config path
 enf config show
 enf config show embedding
+enf config use code
 enf config explain reranker.endpoint
 enf config set search.limit 20
 enf config validate
@@ -215,8 +217,9 @@ and image embedding settings.
 Provider setup can be written during init, then overridden per indexing or
 search command when needed.
 
-- Native: `enf setup use local`
-- Ollama: `enf setup use ollama --endpoint http://localhost:11434/api/embed`
+- Native Gemma: `enf config use code`
+- Native Nomic: `enf setup use local`
+- Ollama Gemma: `enf setup use ollama --model gemma --endpoint http://localhost:11434/api/embed`
 - OpenAI: `enf setup use openai --api-key-env OPENAI_API_KEY`
 - OpenAI-compatible: `enf setup use custom --endpoint https://provider.example.com/v1/embeddings`
 - Generic HTTP: `enf config set embedding.provider http`, then set model/endpoint/dimensions
@@ -234,9 +237,10 @@ Optional endpoint-backed features are configured in `.enf.toml`:
   `open_clip/ViT-H-14:laion2b_s32b_b79k`, `dimensions = 1024`, and an
   `embeddings` vector list.
 
-Per-command overrides (for `index`, `search`, `retrieve`):
+Per-command overrides (for `models install`, `index`, `search`, `retrieve`):
 
 ```sh
+enf models install gemma --provider native
 enf search "..." --provider openai --model text-embedding-3-small --json
 enf index . --provider native --model nomic-embed-text-v1.5
 ```
@@ -245,6 +249,8 @@ Notes:
 
 - The OpenAI variant auto-maps `nomic-embed-text-v1.5` to `text-embedding-3-small`
   unless you explicitly set a supported model.
+- The `gemma` alias maps to `google/embeddinggemma-300m` for native Candle
+  installs and `embeddinggemma:300m` for endpoint-backed providers.
 - `openai` sets `OPENAI_API_KEY` as the default environment variable key if
   a per-command `--api-key-env` override is not provided.
 - `--model-cache project` stores marker state in `.enf/models`, while `--model-cache

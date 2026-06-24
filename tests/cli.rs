@@ -291,3 +291,115 @@ fn models_install_dry_run_reports_marker_without_writing_it() {
     assert_eq!(json["dry_run"], true);
     assert!(!std::path::Path::new(marker).exists());
 }
+
+#[test]
+fn models_install_accepts_provider_overrides_and_normalizes_native_gemma_alias() {
+    let temp = tempfile::tempdir().unwrap();
+    Command::cargo_bin("enf")
+        .unwrap()
+        .current_dir(temp.path())
+        .env("ENF_SKIP_NATIVE_MODEL_LOAD", "1")
+        .args([
+            "init",
+            "--provider",
+            "ollama",
+            "--model",
+            "nomic",
+            "--model-cache",
+            "project",
+        ])
+        .assert()
+        .success();
+
+    let output = Command::cargo_bin("enf")
+        .unwrap()
+        .current_dir(temp.path())
+        .env("ENF_SKIP_NATIVE_MODEL_LOAD", "1")
+        .args([
+            "models",
+            "install",
+            "gemma",
+            "--provider",
+            "native",
+            "--dry-run",
+            "--json",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: Value = serde_json::from_slice(&output).unwrap();
+
+    assert_eq!(json["provider"], "native");
+    assert_eq!(json["model"], "google/embeddinggemma-300m");
+    assert_eq!(json["variant"], "quantized");
+    assert_eq!(json["dimensions"], 768);
+}
+
+#[test]
+fn setup_and_config_use_normalize_gemma_for_remote_and_native_profiles() {
+    let temp = tempfile::tempdir().unwrap();
+    Command::cargo_bin("enf")
+        .unwrap()
+        .current_dir(temp.path())
+        .env("ENF_SKIP_NATIVE_MODEL_LOAD", "1")
+        .args(["init", "--provider", "native"])
+        .assert()
+        .success();
+
+    Command::cargo_bin("enf")
+        .unwrap()
+        .current_dir(temp.path())
+        .args([
+            "setup",
+            "use",
+            "ollama",
+            "--model",
+            "gemma",
+            "--endpoint",
+            "http://localhost:11434/api/embed",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("index . --reembed"));
+
+    let config = std::fs::read_to_string(temp.path().join(".enf.toml")).unwrap();
+    assert!(config.contains("provider = \"ollama\""));
+    assert!(config.contains("model = \"embeddinggemma:300m\""));
+    assert!(!config.contains("variant = \"quantized\""));
+
+    Command::cargo_bin("enf")
+        .unwrap()
+        .current_dir(temp.path())
+        .args(["config", "use", "code"])
+        .assert()
+        .success();
+
+    let config = std::fs::read_to_string(temp.path().join(".enf.toml")).unwrap();
+    assert!(config.contains("provider = \"native\""));
+    assert!(config.contains("engine = \"candle\""));
+    assert!(config.contains("model = \"google/embeddinggemma-300m\""));
+    assert!(config.contains("variant = \"quantized\""));
+}
+
+#[test]
+fn top_level_help_explains_core_command_purposes() {
+    Command::cargo_bin("enf")
+        .unwrap()
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "Search indexed files with human-readable results",
+        ))
+        .stdout(predicate::str::contains(
+            "Retrieve RAG-friendly JSON results",
+        ))
+        .stdout(predicate::str::contains(
+            "Inspect or install the active embedding model profile",
+        ))
+        .stdout(predicate::str::contains(
+            "Show, validate, edit, or switch ENF configuration",
+        ));
+}

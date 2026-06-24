@@ -15,6 +15,7 @@ const NOMIC_V15_REPO: &str = "nomic-ai/nomic-embed-text-v1.5";
 const GEMMA_REPO: &str = "google/embeddinggemma-300m";
 const NOMIC_MAX_LENGTH: usize = 512;
 const GEMMA_MAX_LENGTH: usize = 2048;
+const GEMMA_HF_ACCESS_HELP: &str = "Native Gemma downloads require accepting the Google Gemma license on Hugging Face and configuring an HF token. Visit https://huggingface.co/google/embeddinggemma-300m, accept the license, then run `hf auth login` or set HF_TOKEN before retrying `enf models install gemma --provider native`.";
 
 pub enum NativeCandleEmbedding {
     Nomic(NomicV15CandleEmbedding),
@@ -243,33 +244,31 @@ impl EmbeddingGemma300MCandleEmbedding {
         let repo = api.model(GEMMA_REPO.to_string());
 
         let config_path = repo.get("config.json").with_context(|| {
-            format!(
-                "downloading {GEMMA_REPO}/config.json; this gated model requires accepting the Gemma license and a Hugging Face token"
-            )
+            format!("downloading {GEMMA_REPO}/config.json. {GEMMA_HF_ACCESS_HELP}")
         })?;
         let tokenizer_path = repo.get("tokenizer.json").with_context(|| {
-            format!(
-                "downloading {GEMMA_REPO}/tokenizer.json; this gated model requires accepting the Gemma license and a Hugging Face token"
-            )
+            format!("downloading {GEMMA_REPO}/tokenizer.json. {GEMMA_HF_ACCESS_HELP}")
         })?;
         let weights = repo.get("model.safetensors").with_context(|| {
-            format!(
-                "downloading {GEMMA_REPO}/model.safetensors; this gated model requires accepting the Gemma license and a Hugging Face token"
-            )
+            format!("downloading {GEMMA_REPO}/model.safetensors. {GEMMA_HF_ACCESS_HELP}")
         })?;
 
         let dense_specs = [
             (
-                repo.get("2_Dense/config.json")
-                    .context("downloading EmbeddingGemma dense projection config")?,
-                repo.get("2_Dense/model.safetensors")
-                    .context("downloading EmbeddingGemma dense projection weights")?,
+                repo.get("2_Dense/config.json").with_context(|| {
+                    format!("downloading EmbeddingGemma dense projection config. {GEMMA_HF_ACCESS_HELP}")
+                })?,
+                repo.get("2_Dense/model.safetensors").with_context(|| {
+                    format!("downloading EmbeddingGemma dense projection weights. {GEMMA_HF_ACCESS_HELP}")
+                })?,
             ),
             (
-                repo.get("3_Dense/config.json")
-                    .context("downloading EmbeddingGemma output projection config")?,
-                repo.get("3_Dense/model.safetensors")
-                    .context("downloading EmbeddingGemma output projection weights")?,
+                repo.get("3_Dense/config.json").with_context(|| {
+                    format!("downloading EmbeddingGemma output projection config. {GEMMA_HF_ACCESS_HELP}")
+                })?,
+                repo.get("3_Dense/model.safetensors").with_context(|| {
+                    format!("downloading EmbeddingGemma output projection weights. {GEMMA_HF_ACCESS_HELP}")
+                })?,
             ),
         ];
 

@@ -19,22 +19,35 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    /// Set up a project config and SQLite index.
+    #[command(
+        long_about = "Configure a new project database and embedding profile.\n\nGemma is recommended for code-oriented documents, while Nomic is often a better default for larger documents and no-chunking prose workflows."
+    )]
     Init(InitArgs),
+    /// Switch providers, models, reranker, images, and search defaults.
     Setup(SetupArgs),
+    /// Show, validate, edit, or switch ENF configuration.
     Config(ConfigArgs),
+    /// Inspect or install the active embedding model profile.
     Models(ModelsArgs),
+    /// Add or refresh files in the search index.
     Index(IndexArgs),
     #[command(hide = true)]
     Add(IndexArgs),
     #[command(hide = true)]
     Remove(RemoveArgs),
+    /// Search indexed files with human-readable results.
     #[command(alias = "find")]
     Search(SearchArgs),
+    /// Retrieve RAG-friendly JSON results for agents and scripts.
     Retrieve(SearchArgs),
+    /// Show readiness, index counts, and active embedding profile.
     Status(StatusArgs),
+    /// Diagnose setup, model, provider, and index health.
     Doctor(DoctorArgs),
     #[command(hide = true)]
     Ci(CiArgs),
+    /// Update the installed enf binary.
     Update(UpdateArgs),
 }
 
@@ -223,6 +236,7 @@ pub enum ConfigCommand {
     Explain(ConfigExplainArgs),
     Validate(JsonArgs),
     Edit,
+    Use(SetupUseArgs),
     Set(ConfigSetArgs),
     Diff(ConfigDiffArgs),
     Doctor(JsonArgs),
@@ -277,9 +291,10 @@ pub enum ModelsCommand {
 
 #[derive(Debug, Args)]
 pub struct ModelInstallArgs {
+    #[arg(value_name = "MODEL", id = "install_model")]
     pub model: Option<String>,
-    #[arg(long, value_enum)]
-    pub variant: Option<ModelVariantArg>,
+    #[command(flatten)]
+    pub provider: ProviderOverrideArgs,
     #[arg(long)]
     pub json: bool,
     #[arg(long)]
